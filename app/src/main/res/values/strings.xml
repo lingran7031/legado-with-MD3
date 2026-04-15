@@ -598,6 +598,11 @@
     <string name="timer_m">%d min</string>
     <string name="brightness_auto">Auto-Brightness %s</string>
     <string name="read_aloud_by_page">Speak by pages</string>
+    <string name="read_complete_chapter">Read complete chapter</string>
+    <string name="read_complete_chapter_summary">When the timer is enabled, continue reading until the end of the current chapter</string>
+    <string name="read_complete_chapter_enabled">Read complete chapter mode enabled</string>
+    <string name="use_android_media_api_notification">Use Android standard media API notification</string>
+    <string name="use_android_media_api_notification_summary">Create and manage media notifications through system media API</string>
     <string name="speak_engine">Speak Engine</string>
     <string name="bg_image">Background images</string>
     <string name="bg_color">Background color</string>
