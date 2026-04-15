@@ -78,6 +78,20 @@
             android:summary="@string/audio_cache_clean_time_summary"
             android:title="@string/audio_cache_clean_time"
             app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="false"
+            android:title="@string/read_complete_chapter"
+            android:summary="@string/read_complete_chapter_summary"
+            android:key="read_complete_chapter"
+            app:iconSpaceReserved="false" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="false"
+            android:title="@string/use_android_media_api_notification"
+            android:summary="@string/use_android_media_api_notification_summary"
+            android:key="use_android_media_api_notification"
+            app:iconSpaceReserved="false" />
         </io.legado.app.lib.prefs.PreferenceCategory>
 
 </androidx.preference.PreferenceScreen>

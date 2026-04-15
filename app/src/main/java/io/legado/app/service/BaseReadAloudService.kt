@@ -92,6 +92,9 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     private val useWakeLock = appCtx.getPrefBoolean(PreferKey.readAloudWakeLock, false)
+    private var readCompleteChapter = appCtx.getPrefBoolean(PreferKey.readCompleteChapter, false)
+    private var lastReadCompleteChapter = readCompleteChapter
+    private var useAndroidMediaApiNotification = appCtx.getPrefBoolean(PreferKey.useAndroidMediaApiNotification, false)
     private val wakeLock by lazy {
         powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "legado:ReadAloudService")
             .apply {
@@ -179,6 +182,21 @@ abstract class BaseReadAloudService : BaseService(),
                 PreferKey.ignoreAudioFocus,
                 PreferKey.pauseReadAloudWhilePhoneCalls -> {
                     initPhoneStateListener()
+                }
+                PreferKey.readCompleteChapter -> {
+                    val newState = appCtx.getPrefBoolean(PreferKey.readCompleteChapter, false)
+                    // 只在状态从关闭切换到开启时显示提示
+                    if (!lastReadCompleteChapter && newState) {
+                        toastOnUi(getString(R.string.read_complete_chapter_enabled))
+                    }
+                    // 更新状态
+                    lastReadCompleteChapter = newState
+                    readCompleteChapter = newState
+                }
+                PreferKey.useAndroidMediaApiNotification -> {
+                    useAndroidMediaApiNotification = appCtx.getPrefBoolean(PreferKey.useAndroidMediaApiNotification, false)
+                    // 更新通知
+                    upReadAloudNotification()
                 }
             }
         }
@@ -408,6 +426,13 @@ abstract class BaseReadAloudService : BaseService(),
                         timeMinute--
                     }
                     if (timeMinute == 0) {
+                        if (readCompleteChapter && isRun) {
+                            // 检查是否已读完当前章节
+                            if (!isChapterCompleted()) {
+                                // 继续朗读直至章节结束
+                                continue
+                            }
+                        }
                         ReadAloud.stop(this@BaseReadAloudService)
                         postEvent(EventBus.READ_ALOUD_DS, timeMinute)
                         break
@@ -417,6 +442,17 @@ abstract class BaseReadAloudService : BaseService(),
                 upReadAloudNotification()
             }
         }
+    }
+
+    /**
+     * 检查当前章节是否已朗读完成
+     */
+    private fun isChapterCompleted(): Boolean {
+        textChapter?.let {chapter ->
+            val totalLength = chapter.getReadLength(chapter.pageSize - 1)
+            return readAloudNumber >= totalLength
+        }
+        return true
     }
 
     /**
@@ -567,10 +603,21 @@ abstract class BaseReadAloudService : BaseService(),
         }
     }
 
+    /**
+     * 获取通知构建器
+     */
+    private fun getNotificationBuilder(): NotificationCompat.Builder {
+        return if (useAndroidMediaApiNotification) {
+            createAndroidMediaApiNotification()
+        } else {
+            createNotification()
+        }
+    }
+
     private fun upReadAloudNotification() {
         upNotificationJob = execute {
             try {
-                val notification = createNotification()
+                val notification = getNotificationBuilder()
                 notificationManager.notify(NotificationId.ReadAloudService, notification.build())
             } catch (e: Exception) {
                 AppLog.put("创建朗读通知出错,${e.localizedMessage}", e, true)
@@ -659,12 +706,91 @@ abstract class BaseReadAloudService : BaseService(),
     }
 
     /**
+     * 创建Android标准媒体API通知
+     */
+    private fun createAndroidMediaApiNotification(): NotificationCompat.Builder {
+        var nTitle: String = when {
+            pause -> getString(R.string.read_aloud_pause)
+            timeMinute > 0 -> getString(
+                R.string.read_aloud_timer,
+                timeMinute
+            )
+            else -> getString(R.string.read_aloud_t)
+        }
+        nTitle += ": ${ReadBook.book?.name}"
+        var nSubtitle = ReadBook.curTextChapter?.title
+        if (nSubtitle.isNullOrBlank())
+            nSubtitle = getString(R.string.read_aloud_s)
+        
+        val builder = NotificationCompat
+            .Builder(this, AppConst.channelIdReadAloud)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+            .setSmallIcon(R.drawable.ic_volume_up)
+            .setSubText(getString(R.string.read_aloud))
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setContentTitle(nTitle)
+            .setContentText(nSubtitle)
+            .setContentIntent(
+                activityPendingIntent<ReadBookActivity>("activity")
+            )
+            .setVibrate(null)
+            .setSound(null)
+            .setLights(0, 0, 0)
+        
+        builder.setLargeIcon(cover)
+        
+        // 使用Android标准媒体API的MediaStyle
+        val mediaStyle = androidx.media.app.NotificationCompat.MediaStyle()
+            .setShowActionsInCompactView(0, 1, 2) // 只显示前三个操作
+            .setMediaSession(mediaSessionCompat.sessionToken)
+        
+        // 按钮定义：播放/暂停、上一章、下一章、定时
+        if (pause) {
+            builder.addAction(
+                R.drawable.ic_play,
+                getString(R.string.resume),
+                aloudServicePendingIntent(IntentAction.resume)
+            )
+        } else {
+            builder.addAction(
+                R.drawable.ic_pause,
+                getString(R.string.pause),
+                aloudServicePendingIntent(IntentAction.pause)
+            )
+        }
+        
+        builder.addAction(
+            R.drawable.ic_skip_previous,
+            getString(R.string.previous_chapter),
+            aloudServicePendingIntent(IntentAction.prev)
+        )
+        
+        builder.addAction(
+            R.drawable.ic_skip_next,
+            getString(R.string.next_chapter),
+            aloudServicePendingIntent(IntentAction.next)
+        )
+        
+        builder.addAction(
+            R.drawable.ic_time_add_24dp,
+            getString(R.string.set_timer),
+            aloudServicePendingIntent(IntentAction.addTimer)
+        )
+        
+        builder.setStyle(mediaStyle)
+        return builder
+    }
+
+    /**
      * 更新通知
      */
     override fun startForegroundNotification() {
         execute {
             try {
-                val notification = createNotification()
+                val notification = getNotificationBuilder()
                 startForeground(NotificationId.ReadAloudService, notification.build())
             } catch (e: Exception) {
                 AppLog.put("创建朗读通知出错,${e.localizedMessage}", e, true)

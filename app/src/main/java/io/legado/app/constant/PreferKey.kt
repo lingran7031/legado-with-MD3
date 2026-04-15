@@ -276,4 +276,6 @@ object PreferKey {
     const val selectVibrator = "selectVibrator"
     const val audioCacheCleanTime = "audioCacheCleanTime"
     const val audioPreDownloadNum = "audioPreDownloadNum"
+    const val readCompleteChapter = "read_complete_chapter"
+    const val useAndroidMediaApiNotification = "use_android_media_api_notification"
 }

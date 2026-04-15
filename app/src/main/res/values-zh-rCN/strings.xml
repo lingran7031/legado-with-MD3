@@ -595,6 +595,11 @@
     <string name="timer_m">%d 分钟</string>
     <string name="brightness_auto">自动亮度 %s</string>
     <string name="read_aloud_by_page">按页朗读</string>
+    <string name="read_complete_chapter">读完整章</string>
+    <string name="read_complete_chapter_summary">当定时功能开启时，朗读完当前章节再停止</string>
+    <string name="read_complete_chapter_enabled">读完整章模式已启用</string>
+    <string name="use_android_media_api_notification">使用Android标准媒体API通知</string>
+    <string name="use_android_media_api_notification_summary">通过系统媒体API创建和管理媒体通知</string>
     <string name="speak_engine">朗读引擎</string>
     <string name="bg_image">背景图片</string>
     <string name="bg_color">背景颜色</string>
