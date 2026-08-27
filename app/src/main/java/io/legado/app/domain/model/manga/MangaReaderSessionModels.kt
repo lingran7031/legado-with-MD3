@@ -1,11 +1,11 @@
 package io.legado.app.domain.model.manga
 
-import java.util.UUID
+import kotlin.uuid.Uuid
 
 @JvmInline
 value class MangaSessionId(val value: String) {
     companion object {
-        fun create(): MangaSessionId = MangaSessionId(UUID.randomUUID().toString())
+        fun create(): MangaSessionId = MangaSessionId(Uuid.random().toString())
     }
 }
 
@@ -21,6 +21,7 @@ data class MangaBookState(
     val inBookshelf: Boolean,
     val scrollMode: Int?,
     val sidePaddingDp: Int?,
+    val isLocal: Boolean,
     /** TOC titles are retained so a chapter transition stays informative before pages load. */
     val chapterTitles: List<String>,
 )

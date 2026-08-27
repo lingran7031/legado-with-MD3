@@ -28,11 +28,11 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.ImmutableMap
 import kotlinx.collections.immutable.persistentListOf
 import kotlinx.collections.immutable.persistentMapOf
-import java.util.UUID
+import kotlin.uuid.Uuid
 
 @Stable
 data class ReminderUiState(
-    val id: String = UUID.randomUUID().toString(),
+    val id: String = Uuid.random().toString(),
     val message: String,
     val actionText: String? = null,
     val actionIntent: ReadBookIntent? = null,
@@ -228,6 +228,10 @@ data class ReadBookUiState(
     // Read aloud / auto page
     val isReadAloudRunning: Boolean = false,
     val isReadAloudPaused: Boolean = false,
+    /** 朗读位置是否跟随当前显示页；手动翻页/跳章后为 false（显示"回到朗读位置"悬浮条）。 */
+    val readAloudFollow: Boolean = true,
+    /** 朗读位置脱离当前页时的悬浮提示开关；关闭时手动翻页朗读跟随新页面。 */
+    val readAloudDetachReminderEnabled: Boolean = false,
     val readAloudEngineName: String = "",
     val readAloudCharacterName: String = "",
     val readAloudRoleType: SpeechRoleType = SpeechRoleType.Narrator,
@@ -237,6 +241,7 @@ data class ReadBookUiState(
     // Seek bar
     val seekProgress: Int = 0,
     val seekMax: Int = 0,
+    val readingAnchorAvailable: Boolean = false,
     // Replace rules
     val replaceRuleEnabled: Boolean = false,
     val effectiveReplaceCount: Int = 0,
@@ -362,7 +367,7 @@ data class ReadMenuConfig(
     val readMenuBorderColorNight: Int = 0,
     val readMenuTextColor: Int = 0,
     val readMenuTextColorNight: Int = 0,
-    val readMenuBlurAlpha: Int = 100,
+    val readMenuBlurAlpha: Int = 85,
     val readMenuBlurColor: Int = 0,
     val readMenuBlurColorNight: Int = 0,
     val readMenuPaletteStyle: String = "",
@@ -544,6 +549,9 @@ sealed interface ReadBookIntent {
     data object DismissSheet : ReadBookIntent
     data class SetActiveSheet(val sheet: ReadBookSheet?) : ReadBookIntent
     data class ShowDialog(val dialog: ReadBookDialog) : ReadBookIntent
+    data class ResolveReadRecordAlias(val merge: Boolean, val rememberChoice: Boolean = false) : ReadBookIntent
+    /** 清除所有持久化的未知作者决定，使冲突可以再次由用户确认。 */
+    data object ClearReadRecordAliasDecisions : ReadBookIntent
     data object DismissDialog : ReadBookIntent
 
     // Source actions
@@ -775,6 +783,10 @@ sealed interface ReadBookIntent {
     data object ReadAloudNextParagraph : ReadBookIntent
     data object ReadAloudPrevChapter : ReadBookIntent
     data object ReadAloudNextChapter : ReadBookIntent
+    /** 页面脱离朗读位置后，跳回朗读所在位置并恢复跟随。 */
+    data object BackToSpeakingPosition : ReadBookIntent
+    /** 页面脱离朗读位置后，从当前显示页重新开始朗读。 */
+    data object ReadAloudFromHere : ReadBookIntent
     data class SetReadAloudTtsTimer(val value: Int) : ReadBookIntent
     data class SetFinishCurrentChapterAfterTimer(val value: Boolean) : ReadBookIntent
     data class SetReadAloudTtsFollowSys(val value: Boolean) : ReadBookIntent
@@ -1013,6 +1025,11 @@ sealed interface ReadBookSheet {
 
 @Immutable
 sealed interface ReadBookDialog {
+    data class ReadRecordAliasConflict(
+        val bookName: String,
+        val author: String,
+        val readTime: Long,
+    ) : ReadBookDialog
     data class ConfirmRestoreProgress(val progress: BookProgress) : ReadBookDialog
     data class SureSyncProgress(val progress: BookProgress) : ReadBookDialog
     data object RestoreLastBookProgress : ReadBookDialog
@@ -1586,6 +1603,12 @@ sealed interface ConfigUpdate {
         override val actions = emptySet<ConfigUpdateAction>()
     }
     data class AutoSuggestDayNight(val value: Boolean) : ConfigUpdate {
+        override val actions = emptySet<ConfigUpdateAction>()
+    }
+    data class ReadingAnchorEnabled(val value: Boolean) : ConfigUpdate {
+        override val actions = emptySet<ConfigUpdateAction>()
+    }
+    data class ReadAloudDetachReminderEnabled(val value: Boolean) : ConfigUpdate {
         override val actions = emptySet<ConfigUpdateAction>()
     }
     data class SelectText(val value: Boolean) : ConfigUpdate {

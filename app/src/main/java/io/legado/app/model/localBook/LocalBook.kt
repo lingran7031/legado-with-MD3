@@ -65,7 +65,6 @@ import java.io.FileInputStream
 import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.InputStream
-import java.util.regex.Pattern
 
 /**
  * 书籍文件导入 目录正文解析
@@ -74,10 +73,10 @@ import java.util.regex.Pattern
 object LocalBook {
 
     private val nameAuthorPatterns = arrayOf(
-        Pattern.compile("(.*?)《([^《》]+)》.*?作者：(.*)"),
-        Pattern.compile("(.*?)《([^《》]+)》(.*)"),
-        Pattern.compile("(^)(.+) 作者：(.+)$"),
-        Pattern.compile("(^)(.+) by (.+)$")
+        Regex("(.*?)《([^《》]+)》.*?作者：(.*)"),
+        Regex("(.*?)《([^《》]+)》(.*)"),
+        Regex("(^)(.+) 作者：(.+)$"),
+        Regex("(^)(.+) by (.+)$")
     )
 
     @Throws(FileNotFoundException::class, SecurityException::class)
@@ -241,6 +240,8 @@ object LocalBook {
      * 导入本地文件
      */
     fun importFile(uri: Uri): Book {
+        val input = FileDoc.fromUri(uri, false)
+        if (input.isDir) return importMangaDirectory(input)
         val bookUrl: String
         //updateTime变量不要修改,否则会导致读取不到缓存
         val (fileName, _, _, updateTime, _) = FileDoc.fromUri(uri, false).apply {
@@ -270,6 +271,32 @@ object LocalBook {
             // 触发 isLocalModified
             book.latestChapterTime = 0
             //已有书籍说明是更新,删除原有目录
+            appDb.bookChapterDao.delByBook(bookUrl)
+            appDb.bookDao.update(book)
+        }
+        return book
+    }
+
+    fun importMangaDirectory(directory: FileDoc): Book {
+        require(directory.isDir) { "Expected a directory" }
+        val bookUrl = directory.toString()
+        val existing = appDb.bookDao.getBook(bookUrl)
+        val book = existing ?: Book(
+            type = BookType.local or BookType.image,
+            bookUrl = bookUrl,
+            name = directory.name,
+            author = "",
+            originName = directory.name,
+            origin = BookType.localTag,
+            latestChapterTime = directory.lastModified,
+            order = appDb.bookDao.minOrder - 1,
+        )
+        book.type = BookType.local or BookType.image
+        book.origin = BookType.localTag
+        book.originName = directory.name
+        book.latestChapterTime = directory.lastModified
+        book.upKind()
+        if (existing == null) appDb.bookDao.insert(book) else {
             appDb.bookChapterDao.delByBook(bookUrl)
             appDb.bookDao.update(book)
         }
@@ -314,11 +341,21 @@ object LocalBook {
         val books = mutableListOf<Book>()
         val fileDoc = FileDoc.fromUri(uri, false)
         if (ArchiveUtils.isArchive(fileDoc.name)) {
-            books.addAll(
-                importArchiveFile(uri) {
-                    it.matches(AppPattern.bookFileRegex)
+            val entries = ArchiveUtils.getArchiveFilesName(fileDoc)
+            val isComicArchive = entries.any { entry ->
+                entry.substringAfterLast('.', "").lowercase() in
+                        setOf("jpg", "jpeg", "png", "webp", "gif", "avif", "bmp")
+            }
+            if (isComicArchive) {
+                books += importFile(uri).apply {
+                    type = BookType.local or BookType.image or BookType.archive
+                    origin = BookType.localTag
+                    upKind()
+                    save()
                 }
-            )
+            } else {
+                books.addAll(importArchiveFile(uri) { it.matches(AppPattern.bookFileRegex) })
+            }
         } else {
             books.add(importFile(uri))
         }
@@ -330,13 +367,7 @@ object LocalBook {
         uris.forEach { uri ->
             val fileDoc = FileDoc.fromUri(uri, false)
             kotlin.runCatching {
-                if (ArchiveUtils.isArchive(fileDoc.name)) {
-                    importArchiveFile(uri) {
-                        it.matches(AppPattern.bookFileRegex)
-                    }
-                } else {
-                    importFile(uri)
-                }
+                importFiles(uri)
             }.onFailure {
                 AppLog.put("ImportFile Error:\nFile $fileDoc\n${it.localizedMessage}", it)
                 errorCount += 1
@@ -375,10 +406,10 @@ object LocalBook {
         }
         if (name.isBlank()) {
             for (pattern in nameAuthorPatterns) {
-                pattern.matcher(tempFileName).takeIf { it.find() }?.run {
-                    name = group(2)!!
-                    val group1 = group(1) ?: ""
-                    val group3 = group(3) ?: ""
+                pattern.find(tempFileName)?.let { m ->
+                    name = m.groupValues[2]
+                    val group1 = m.groupValues[1]
+                    val group3 = m.groupValues[3]
                     author = BookHelp.formatBookAuthor(group1 + group3)
                     return Pair(name, author)
                 }

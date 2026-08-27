@@ -68,11 +68,6 @@ import io.legado.app.data.repository.LocalPasswordRepository
 import io.legado.app.data.repository.MangaSettingsRepository
 import io.legado.app.data.repository.OtherConfigSystemRepository
 import io.legado.app.data.repository.OtherSettingsRepository
-import io.legado.app.data.repository.manga.DefaultMangaReaderSession
-import io.legado.app.data.repository.manga.MangaReaderActionRepository
-import io.legado.app.data.repository.manga.MangaReaderDataRepository
-import io.legado.app.domain.gateway.MangaReaderDataGateway
-import io.legado.app.domain.gateway.MangaReaderSessionFactory
 import io.legado.app.data.repository.ReadAloudSettingsRepository
 import io.legado.app.data.repository.ReadAloudVoiceRepository
 import io.legado.app.data.repository.ReadBookStyleConfigRepository
@@ -101,6 +96,9 @@ import io.legado.app.data.repository.TxtTocRuleRepository
 import io.legado.app.data.repository.UploadRepository
 import io.legado.app.data.repository.WebDavBackupRepository
 import io.legado.app.data.repository.WebDavReadingProgressRepository
+import io.legado.app.data.repository.manga.DefaultMangaReaderSession
+import io.legado.app.data.repository.manga.MangaReaderActionRepository
+import io.legado.app.data.repository.manga.MangaReaderDataRepository
 import io.legado.app.data.security.CloudTtsCredentialCipher
 import io.legado.app.domain.gateway.AiArtifactGateway
 import io.legado.app.domain.gateway.AiChatGateway
@@ -147,6 +145,8 @@ import io.legado.app.domain.gateway.ImportBookSettingsGateway
 import io.legado.app.domain.gateway.LabSettingsGateway
 import io.legado.app.domain.gateway.LocalBookGateway
 import io.legado.app.domain.gateway.LocalPasswordGateway
+import io.legado.app.domain.gateway.MangaReaderDataGateway
+import io.legado.app.domain.gateway.MangaReaderSessionFactory
 import io.legado.app.domain.gateway.MangaSettingsGateway
 import io.legado.app.domain.gateway.OtherConfigSystemGateway
 import io.legado.app.domain.gateway.OtherSettingsGateway
@@ -186,6 +186,7 @@ import io.legado.app.domain.usecase.ExportBookshelfUseCase
 import io.legado.app.domain.usecase.GenerateBookshelfAutoGroupPlanUseCase
 import io.legado.app.domain.usecase.GenerateChapterSummaryUseCase
 import io.legado.app.domain.usecase.GetChapterContentUseCase
+import io.legado.app.domain.usecase.CheckBookContentQualityUseCase
 import io.legado.app.domain.usecase.GetReadingProgressUseCase
 import io.legado.app.domain.usecase.HomeDashboardUseCase
 import io.legado.app.domain.usecase.IdentifyBookCharactersUseCase
@@ -225,6 +226,7 @@ import io.legado.app.ui.association.ImportHttpTtsViewModel
 import io.legado.app.ui.association.ImportReplaceRuleViewModel
 import io.legado.app.ui.association.ImportRssSourceViewModel
 import io.legado.app.ui.association.ImportTxtTocRuleViewModel
+import io.legado.app.ui.book.audio.AudioPlayCoordinator
 import io.legado.app.ui.book.audio.AudioPlayViewModel
 import io.legado.app.ui.book.bookmark.AllBookmarkViewModel
 import io.legado.app.ui.book.cache.manage.BookCacheManageViewModel
@@ -311,13 +313,13 @@ import io.legado.app.ui.rss.subscription.RuleSubViewModel
 import io.legado.app.ui.tagGroupRule.TagGroupRuleViewModel
 import io.legado.app.utils.isNightMode
 import io.legado.app.utils.sysConfiguration
-import org.koin.core.module.dsl.singleOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.datetime.Clock
 import org.koin.core.module.dsl.factoryOf
+import org.koin.core.module.dsl.singleOf
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
 import org.koin.dsl.module
-import kotlinx.coroutines.Dispatchers
-import java.time.Clock
 
 val appModule = module {
 
@@ -430,7 +432,7 @@ val appModule = module {
     singleOf(::CoverAlbumUseCase)
     singleOf(::DeleteBooksUseCase)
     singleOf(::GetReadingProgressUseCase)
-    single { HomeDashboardUseCase(get(), Clock.systemDefaultZone()) }
+    single { HomeDashboardUseCase(get(), Clock.System) }
     singleOf(::RemoveBookGroupAssignmentUseCase)
     singleOf(::UpdateBooksGroupUseCase)
     singleOf(::UploadReadingProgressUseCase)
@@ -493,6 +495,7 @@ val appModule = module {
     singleOf(::SearchBooksUseCase)
     singleOf(::ChangeSourceSearchUseCase)
     singleOf(::GetChapterContentUseCase)
+    singleOf(::CheckBookContentQualityUseCase)
     singleOf(::AiToolAwareGenerationUseCase)
     singleOf(::AiTaskManager)
     singleOf(::IdentifyBookCharactersUseCase)
@@ -628,9 +631,14 @@ val appModule = module {
     viewModel {
         AudioPlayViewModel(
             application = get(),
+            coordinator = get(),
             bookRepository = get(),
+            otherSettingsGateway = get(),
+            readAloudSettingsGateway = get(),
+            readSettingsGateway = get(),
         )
     }
+    singleOf(::AudioPlayCoordinator)
     viewModel {
         SourceLoginViewModel(
             application = get(),
@@ -738,6 +746,7 @@ val appModule = module {
             bookSourceRepository = get(),
             bookmarkRepository = get(),
             bookRepository = get(),
+            readRecordRepository = get(),
             readerSession = get(),
         )
     }

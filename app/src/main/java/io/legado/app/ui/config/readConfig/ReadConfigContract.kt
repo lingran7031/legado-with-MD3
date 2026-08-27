@@ -11,7 +11,7 @@ data class ReadConfigUiState(
     val hideNavigationBar: Boolean = false,
     val paddingDisplayCutouts: Boolean = false,
     val titleBarMode: String = "1",
-    val readMenuBlurAlpha: Int = 100,
+    val readMenuBlurAlpha: Int = 85,
     val readBodyToLh: Boolean = true,
     val defaultSourceChangeAll: Boolean = true,
     val textFullJustify: Boolean = true,
@@ -37,6 +37,8 @@ data class ReadConfigUiState(
     val selectVibrator: Boolean = false,
     val autoChangeSource: Boolean = true,
     val autoSuggestDayNight: Boolean = false,
+    val readingAnchorEnabled: Boolean = true,
+    val readAloudDetachReminderEnabled: Boolean = false,
     val selectText: Boolean = true,
     val noAnimScrollPage: Boolean = false,
     val clickImgWay: String = "2",
@@ -106,6 +108,8 @@ sealed interface ReadConfigIntent {
     data class ShowReadTitleAdditionChanged(val value: Boolean) : ReadConfigIntent
     data class ShowMenuIconChanged(val value: Boolean) : ReadConfigIntent
     data class AutoSuggestDayNightChanged(val value: Boolean) : ReadConfigIntent
+    data class ReadingAnchorChanged(val value: Boolean) : ReadConfigIntent
+    data class ReadAloudDetachReminderChanged(val value: Boolean) : ReadConfigIntent
     data class PageKeysChanged(val prevKeys: String, val nextKeys: String) : ReadConfigIntent
 }
 
