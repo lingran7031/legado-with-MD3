@@ -76,6 +76,8 @@ object ReadBookConfig {
     val useZhLayout get() = readSettings.useZhLayout
     val readMenuIconShowText get() = readSettings.readMenuIconShowText
     val showMenuIcon get() = readSettings.showMenuIcon
+    val readingAnchorEnabled get() = readSettings.readingAnchorEnabled
+    val readAloudDetachReminderEnabled get() = readSettings.readAloudDetachReminderEnabled
     val titleBarCompact get() = readSettings.titleBarCompact
     val readMenuFloatingBottomBar get() = readSettings.readMenuFloatingBottomBar
     val readMenuTopBarLiquidGlassButtons get() = readSettings.readMenuTopBarLiquidGlassButtons

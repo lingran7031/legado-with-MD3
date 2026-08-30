@@ -12,6 +12,18 @@ import org.junit.Test
 
 class MangaReaderInteractionTest {
 
+    @Test
+    fun `explicit chapter placeholder stays at target and exposes retry after failure`() {
+        val loading = mangaChapterLoadingItem(12, "loading", failed = false)
+        val failed = mangaChapterLoadingItem(12, "failed", failed = true)
+
+        assertTrue(loading.loading)
+        assertEquals(null, loading.retryChapterIndex)
+        assertFalse(failed.loading)
+        assertEquals(12, failed.retryChapterIndex)
+        assertTrue(failed.key.contains("12"))
+    }
+
     private fun page(index: Int, chapter: Int = 0) = MangaReaderItemUi.Page(
         key = "p$index",
         imageUrl = "url$index",
@@ -70,16 +82,114 @@ class MangaReaderInteractionTest {
     }
 
     @Test
-    fun `page step returns item target inside chapter`() {
-        assertEquals(4, mangaPageStepTarget(currentIndex = 3, itemCount = 8, direction = 1))
-        assertEquals(2, mangaPageStepTarget(currentIndex = 3, itemCount = 8, direction = -1))
+    fun `page step returns next real page target`() {
+        val items = listOf(page(0), page(1), page(2))
+        assertEquals(1, nextPageItemIndex(items, 0, 1))
+        assertEquals(2, nextPageItemIndex(items, 1, 1))
+        assertEquals(1, nextPageItemIndex(items, 2, -1))
+    }
+
+    @Test
+    fun `page step skips transition pages onto the next real page`() {
+        val items = listOf(
+            page(0),
+            MangaReaderItemUi.ChapterTransition(
+                key = "transition",
+                direction = MangaChapterTransitionDirection.NEXT,
+                targetChapterIndex = 1,
+                currentChapterName = "chapter",
+                targetChapterName = "chapter2",
+                targetStatus = MangaChapterTransitionStatus.READY,
+            ),
+            page(0, 1),
+        )
+        // 当前章最后一页向后一步：跳过过渡页，落在下一章第一页
+        assertEquals(2, nextPageItemIndex(items, 0, 1))
+        // 下一章第一页向前一步：跳过过渡页，回到上一章最后一页
+        assertEquals(0, nextPageItemIndex(items, 2, -1))
     }
 
     @Test
     fun `page step delegates to chapter navigation at list boundaries`() {
-        assertNull(mangaPageStepTarget(currentIndex = 0, itemCount = 8, direction = -1))
-        assertNull(mangaPageStepTarget(currentIndex = 7, itemCount = 8, direction = 1))
-        assertNull(mangaPageStepTarget(currentIndex = 0, itemCount = 0, direction = 1))
+        assertNull(nextPageItemIndex(emptyList(), 0, 1))
+        assertNull(nextPageItemIndex(listOf(page(0)), 0, -1))
+        assertNull(nextPageItemIndex(listOf(page(0)), 0, 1))
+        // 越过过渡页后仍无真实页 → 交给章节切换
+        assertNull(
+            nextPageItemIndex(
+                listOf(
+                    page(0),
+                    MangaReaderItemUi.ChapterEdge(
+                        "edge",
+                        "loading",
+                        loading = true,
+                        fullScreen = true
+                    ),
+                ),
+                0,
+                1,
+            )
+        )
+    }
+
+    @Test
+    fun `webtoon enters later chapter at its first visible page not its last`() {
+        val items = listOf(
+            page(8, chapter = 20),
+            MangaReaderItemUi.ChapterTransition(
+                key = "transition",
+                direction = MangaChapterTransitionDirection.NEXT,
+                targetChapterIndex = 21,
+                currentChapterName = "20",
+                targetChapterName = "21",
+                targetStatus = MangaChapterTransitionStatus.READY,
+            ),
+            page(0, chapter = 21),
+            page(1, chapter = 21),
+            page(2, chapter = 21),
+        )
+
+        assertEquals(
+            2,
+            mangaWebtoonFocusedPageIndex(
+                items = items,
+                visibleItemIndices = listOf(1, 2, 3, 4),
+                currentChapterIndex = 20,
+            ),
+        )
+    }
+
+    @Test
+    fun `webtoon enters earlier chapter at its last visible page`() {
+        val items = listOf(
+            page(7, chapter = 20),
+            page(8, chapter = 20),
+            MangaReaderItemUi.ChapterTransition(
+                key = "transition",
+                direction = MangaChapterTransitionDirection.NEXT,
+                targetChapterIndex = 21,
+                currentChapterName = "20",
+                targetChapterName = "21",
+                targetStatus = MangaChapterTransitionStatus.READY,
+            ),
+            page(0, chapter = 21),
+        )
+
+        assertEquals(
+            1,
+            mangaWebtoonFocusedPageIndex(
+                items = items,
+                visibleItemIndices = listOf(0, 1, 2),
+                currentChapterIndex = 21,
+            ),
+        )
+    }
+
+    @Test
+    fun `pending restored position rejects old viewport callback`() {
+        assertFalse(acceptsMangaVisibleItem(requestedItemIndex = 14, reportedItemIndex = 0))
+        assertTrue(acceptsMangaVisibleItem(requestedItemIndex = 14, reportedItemIndex = 14))
+        assertTrue(acceptsMangaVisibleItem(requestedItemIndex = null, reportedItemIndex = 0))
     }
 
     @Test
@@ -89,27 +199,7 @@ class MangaReaderInteractionTest {
     }
 
     @Test
-    fun `chapter switch stays put while current chapter is still visible`() {
-        assertEquals(
-            MangaChapterSwitch.NONE,
-            mangaChapterSwitchDecision(
-                currentChapterIndex = 5,
-                visibleChapterIndex = 6,
-                currentChapterVisible = true,
-            ),
-        )
-        assertEquals(
-            MangaChapterSwitch.NONE,
-            mangaChapterSwitchDecision(
-                currentChapterIndex = 5,
-                visibleChapterIndex = 4,
-                currentChapterVisible = true,
-            ),
-        )
-    }
-
-    @Test
-    fun `chapter switch fires only when current chapter fully off-screen`() {
+    fun `chapter switch moves forward when focused page belongs to a later chapter`() {
         assertEquals(
             MangaChapterSwitch.NEXT,
             mangaChapterSwitchDecision(
@@ -118,6 +208,10 @@ class MangaReaderInteractionTest {
                 currentChapterVisible = false,
             ),
         )
+    }
+
+    @Test
+    fun `chapter switch moves backward when focused page belongs to an earlier chapter`() {
         assertEquals(
             MangaChapterSwitch.PREVIOUS,
             mangaChapterSwitchDecision(
@@ -129,7 +223,7 @@ class MangaReaderInteractionTest {
     }
 
     @Test
-    fun `same chapter never switches regardless of visibility`() {
+    fun `same chapter never switches`() {
         assertEquals(
             MangaChapterSwitch.NONE,
             mangaChapterSwitchDecision(
@@ -138,12 +232,16 @@ class MangaReaderInteractionTest {
                 currentChapterVisible = true,
             ),
         )
+    }
+
+    @Test
+    fun `adjacent prefetched chapter cannot replace the chapter still on screen`() {
         assertEquals(
             MangaChapterSwitch.NONE,
             mangaChapterSwitchDecision(
                 currentChapterIndex = 5,
-                visibleChapterIndex = 5,
-                currentChapterVisible = false,
+                visibleChapterIndex = 6,
+                currentChapterVisible = true,
             ),
         )
     }
@@ -283,6 +381,51 @@ class MangaReaderInteractionTest {
         assertEquals(listOf(listOf(0), listOf(1)), separated.map { it.itemIndices })
         assertTrue(paired.key.contains("p0"))
         assertTrue(paired.key.contains("p1"))
+    }
+
+    @Test
+    fun `chapter cover can stay on a single spread`() {
+        val items = listOf(page(0), page(1), page(2), page(3))
+        assertEquals(
+            listOf(listOf(0), listOf(1, 2), listOf(3)),
+            buildMangaSpreads(items, doublePage = true, coverSingle = true)
+                .map { it.itemIndices },
+        )
+    }
+
+    @Test
+    fun `shift pairing leaves first page of every chapter single`() {
+        val items = listOf(page(0), page(1), page(2), page(0, 1), page(1, 1))
+        assertEquals(
+            listOf(listOf(0), listOf(1, 2), listOf(3), listOf(4)),
+            buildMangaSpreads(items, doublePage = true, shiftPairing = true)
+                .map { it.itemIndices },
+        )
+    }
+
+    @Test
+    fun `wide page split follows reading direction`() {
+        val items = listOf(page(0))
+        val ratios = mapOf("p0" to 2f)
+        val leftToRight = buildMangaSpreads(
+            items,
+            doublePage = true,
+            aspectRatios = ratios,
+            splitWidePages = true,
+        )
+        val rightToLeft = buildMangaSpreads(
+            items,
+            doublePage = true,
+            aspectRatios = ratios,
+            splitWidePages = true,
+            splitRightToLeft = true,
+        )
+        assertEquals(
+            listOf(MangaPageSlice.LEFT, MangaPageSlice.RIGHT),
+            leftToRight.map { it.slots.single().slice })
+        assertEquals(
+            listOf(MangaPageSlice.RIGHT, MangaPageSlice.LEFT),
+            rightToLeft.map { it.slots.single().slice })
     }
 
     @Test

@@ -66,7 +66,6 @@ import io.legado.app.ui.main.MainIntent
 import io.legado.app.ui.widget.components.image.cover.buildCoverImageRequest
 import io.legado.app.utils.ArchiveUtils
 import io.legado.app.utils.GSON
-import io.legado.app.utils.HtmlFormatter
 import io.legado.app.utils.ImageSaveUtils
 import io.legado.app.utils.UrlUtil
 import io.legado.app.utils.fromJsonArray
@@ -369,7 +368,23 @@ class BookInfoViewModel(
             is BookInfoIntent.SetDefaultBookTreeUri -> viewModelScope.launch {
                 otherSettingsGateway.update { it.copy(defaultBookTreeUri = intent.value) }
             }
+            is BookInfoIntent.IntroButtonClick -> runIntroJs(
+                "info button ${intent.name}",
+                intent.click
+            )
+
+            is BookInfoIntent.IntroImageClick -> runIntroJs("info image", intent.click)
+            is BookInfoIntent.IntroImageLongClick -> showDialog(
+                BookInfoDialog.PhotoPreview(intent.source)
+            )
         }
+    }
+
+    /** 简介交互（按钮/图片）触发的书源 JS 执行，宿主通过 [BookInfoEffect.RunIntroJs] 运行。 */
+    private fun runIntroJs(name: String, click: String) {
+        val source = bookSource ?: return
+        val book = currentBook?.uiCopy() ?: return
+        emitEffect(BookInfoEffect.RunIntroJs(name, click, source, book))
     }
 
     fun openEdit() {
@@ -430,19 +445,6 @@ class BookInfoViewModel(
             currentBook = it
             syncUiState(isTocLoading = false)
             openReader(it)
-        }
-    }
-
-    fun onReaderResult(resultCode: Int) {
-        when (resultCode) {
-            RESULT_OK -> {
-                inBookshelf = true
-                syncUiState()
-            }
-
-            READER_RESULT_DELETED -> {
-                emitEffect(BookInfoEffect.Finish(resultCode = RESULT_OK))
-            }
         }
     }
 
@@ -1452,7 +1454,8 @@ class BookInfoViewModel(
                 readRecordTotalTime = currentReadRecordTotalTime,
                 readRecordTimelineDays = currentReadRecordTimelineDays,
                 inBookshelf = inBookshelf,
-                bookSource = bookSource?.toBookInfoSourceUi(),
+                bookSource = bookSource,
+                bookSourceUi = bookSource?.toBookInfoSourceUi(),
                 isTocLoading = isTocLoading,
                 deleteAlertEnabled = LocalConfig.bookInfoDeleteAlert,
                 deleteOriginal = LocalConfig.deleteBookOriginal,
@@ -1735,7 +1738,7 @@ class BookInfoViewModel(
             durChapterIndex = durChapterIndex,
             durChapterPos = durChapterPos,
             remark = remark,
-            displayIntro = HtmlFormatter.formatDisplayText(getDisplayIntro()),
+            intro = getDisplayIntro(),
         )
     }
 

@@ -146,6 +146,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     var bookSource: BookSource? = null
     var msg: String? = null
     private val readRecordRepository: ReadRecordRepository by inject()
+    private val readAloudSessionStore: ReadAloudSessionStore by inject()
     private var lastReadLength: Long = 0
     private val loadingChapters = arrayListOf<Int>()
     private val readRecord = ReadRecord()
@@ -166,6 +167,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
 
     /* 跳转进度前进度记录 */
     var lastBookProgress: BookProgress? = null
+    private var readingAnchorJumpCount = 0
 
     /* web端阅读进度记录 */
     var webBookProgress: BookProgress? = null
@@ -224,6 +226,26 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
      */
     private fun publishSnapshot() {
         _snapshot.value = buildSnapshot()
+        restoreReadAloudFollowIfBackOnPosition()
+    }
+
+    /**
+     * 页面回到朗读所在位置时自动恢复跟随：手动翻页脱离后，翻回朗读位置（同章同页）即视为重新跟随，
+     * 悬浮条随之消失；同时重绘朗读高亮（翻页时旧页高亮已被移除）。朗读服务自身驱动的页面移动不参与。
+     */
+    private fun restoreReadAloudFollowIfBackOnPosition() {
+        if (!BaseReadAloudService.isRun || BaseReadAloudService.speechDrivingNavigation) return
+        val speakingChapterIndex = BaseReadAloudService.currentChapterIndex
+        if (speakingChapterIndex < 0 || speakingChapterIndex != durChapterIndex) return
+        val speakingPage = curTextChapter?.getPageIndexByCharIndex(
+            BaseReadAloudService.currentProgress.coerceAtLeast(0)
+        ) ?: return
+        if (speakingPage == durPageIndex) {
+            if (!readAloudSessionStore.state.value.followReadAloudPosition) {
+                readAloudSessionStore.restoreReadAloudFollow()
+            }
+            upTextChapterAloudSpan(BaseReadAloudService.currentProgress.coerceAtLeast(0))
+        }
     }
 
     /** 当前会话是否正指向该 URL 的书。 */
@@ -274,6 +296,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         renderCallBack?.upPageAnim()
         upWebBook(book)
         lastBookProgress = null
+        readingAnchorJumpCount = 0
         webBookProgress = null
         TextFile.clear()
         requestWholeBookPageEstimate()
@@ -585,6 +608,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     }
 
     fun setProgress(progress: BookProgress) {
+        prepareManualNavigation()
         if (progress.durChapterIndex < chapterSize &&
             (durChapterIndex != progress.durChapterIndex
                     || durChapterPos != progress.durChapterPos)
@@ -605,11 +629,26 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         lastBookProgress = book?.let { BookProgress(it) }
     }
 
+    fun saveReadingAnchorBeforeChapterJump(targetChapterIndex: Int, targetChapterPos: Int = 0) {
+        if (!ReadBookConfig.readingAnchorEnabled) return
+        if (targetChapterIndex == durChapterIndex && targetChapterPos == durChapterPos) return
+        saveCurrentBookProgress()
+        if (lastBookProgress != null) readingAnchorJumpCount++
+    }
+
+    fun hasReadingAnchor(): Boolean =
+        ReadBookConfig.readingAnchorEnabled && lastBookProgress != null && readingAnchorJumpCount >= 2
+
+    fun discardReadingAnchor() {
+        lastBookProgress = null
+        readingAnchorJumpCount = 0
+    }
+
     //恢复跳转前进度
     fun restoreLastBookProgress() {
         lastBookProgress?.let {
             setProgress(it)
-            lastBookProgress = null
+            discardReadingAnchor()
         }
     }
 
@@ -823,7 +862,32 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         }
     }
 
+    /**
+     * 用户手动导航（翻页/跳章/拖动进度/滚动）前的朗读处理：
+     * - 脱离提示开启：页面脱离朗读位置（显示"回到朗读位置"悬浮条）；
+     * - 脱离提示关闭：朗读跟随页面，保持跟随状态（翻页后从新页面重新朗读）。
+     * 朗读服务自身驱动的页面移动（[BaseReadAloudService.speechDrivingNavigation]）不参与。
+     */
+    private fun prepareManualNavigation() {
+        if (!BaseReadAloudService.isRun || BaseReadAloudService.speechDrivingNavigation) return
+        if (ReadBookConfig.readAloudDetachReminderEnabled) {
+            readAloudSessionStore.detachReadAloudFollow()
+        } else {
+            readAloudSessionStore.restoreReadAloudFollow()
+        }
+    }
+
+    /**
+     * 手动导航后：脱离提示关闭时，朗读从新页面重新开始（跟随页面）；开启时保持脱离状态，不重启朗读。
+     */
+    private fun followReadAloudAfterManualNavigation() {
+        if (!BaseReadAloudService.isRun || BaseReadAloudService.speechDrivingNavigation) return
+        if (ReadBookConfig.readAloudDetachReminderEnabled) return
+        readAloud(play = !BaseReadAloudService.pause)
+    }
+
     fun moveToNextPage(): Boolean {
+        prepareManualNavigation()
         var hasNextPage = false
         curTextChapter?.let {
             val nextPagePos = it.getNextPageLength(durChapterPos)
@@ -837,10 +901,12 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 publishSnapshot()
             }
         }
+        followReadAloudAfterManualNavigation()
         return hasNextPage
     }
 
     fun moveToPrevPage(): Boolean {
+        prepareManualNavigation()
         var hasPrevPage = false
         curTextChapter?.let {
             val prevPagePos = it.getPrevPageLength(durChapterPos)
@@ -852,10 +918,12 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
                 publishSnapshot()
             }
         }
+        followReadAloudAfterManualNavigation()
         return hasPrevPage
     }
 
     fun moveToNextChapter(upContent: Boolean, upContentInPlace: Boolean = true): Boolean {
+        prepareManualNavigation()
         if (durChapterIndex < simulatedChapterSize - 1) {
             durChapterPos = 0
             durChapterIndex++
@@ -921,6 +989,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         toLast: Boolean = true,
         upContentInPlace: Boolean = true
     ): Boolean {
+        prepareManualNavigation()
         if (durChapterIndex > 0) {
             durChapterPos = if (toLast) prevTextChapter?.lastReadLength ?: Int.MAX_VALUE else 0
             durChapterIndex--
@@ -946,6 +1015,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     }
 
     fun skipToPage(index: Int, success: (() -> Unit)? = null) {
+        prepareManualNavigation()
         durChapterPos = curTextChapter?.getReadLength(index) ?: index
         renderCallBack?.upContent {
             success?.invoke()
@@ -956,6 +1026,7 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
     }
 
     fun setPageIndex(index: Int) {
+        prepareManualNavigation()
         recycleRecorders(durPageIndex, index)
         durChapterPos = curTextChapter?.getReadLength(index) ?: index
         saveRead(true)
@@ -984,7 +1055,12 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         upContent: Boolean = true,
         success: (() -> Unit)? = null
     ) {
-        if (index < chapterSize) {
+        prepareManualNavigation()
+        // 实时读取章节数而不是依赖缓存 chapterSize：更新目录后 chapterSize 若未同步，
+        // 新增章节的 index 会超出旧值而被下方守卫静默吞掉，表现为「点击新章节无法跳转」。
+        val chapterCount = book?.bookUrl?.let { appDb.bookChapterDao.getChapterCount(it) }
+            ?: chapterSize
+        if (index < chapterCount) {
             clearTextChapter()
             if (upContent) renderCallBack?.upContent()
             durChapterIndex = index
@@ -1007,19 +1083,22 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         renderCallBack?.pageChanged()
         curTextChapter?.let {
             if (BaseReadAloudService.isRun && it.isCompleted) {
-                if (shouldRestartReadAloudAfterContentLoad(
-                        preserveReadAloudPosition = preserveReadAloudPosition,
-                        serviceChapterIndex = BaseReadAloudService.currentChapterIndex,
-                        loadedChapterIndex = it.chapter.index,
-                    )
-                ) {
-                    if (isScroll && pageChanged) {
-                        ReadAloud.pause(appCtx)
+                // 页面已脱离朗读位置（用户手动导航）：既不重启朗读到当前页，也不把页面拉回朗读位置
+                if (readAloudSessionStore.state.value.followReadAloudPosition) {
+                    if (shouldRestartReadAloudAfterContentLoad(
+                            preserveReadAloudPosition = preserveReadAloudPosition,
+                            serviceChapterIndex = BaseReadAloudService.currentChapterIndex,
+                            loadedChapterIndex = it.chapter.index,
+                        )
+                    ) {
+                        if (isScroll && pageChanged) {
+                            ReadAloud.pause(appCtx)
+                        } else {
+                            readAloud(!BaseReadAloudService.pause)
+                        }
                     } else {
-                        readAloud(!BaseReadAloudService.pause)
+                        ReadAloud.syncLayout()
                     }
-                } else {
-                    ReadAloud.syncLayout()
                 }
             }
         }
@@ -1044,6 +1123,20 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
         renderCallBack?.upContent(resetPageOffset = false)
         saveRead(pageChanged = true)
         publishSnapshot()
+    }
+
+    /**
+     * 把显示页定位到章内字符位置并绘制朗读高亮（"回到朗读位置"跳转后调用）。
+     */
+    fun upTextChapterAloudSpan(chapterStart: Int) {
+        if (chapterStart < 0) return
+        val textChapter = curTextChapter ?: return
+        if (textChapter.chapter.index != BaseReadAloudService.currentChapterIndex) return
+        val pageIndex = textChapter.getPageIndexByCharIndex(chapterStart)
+        if (pageIndex < 0) return
+        val aloudSpanStart = chapterStart - textChapter.getReadLength(pageIndex)
+        textChapter.getPage(pageIndex)?.upPageAloudSpan(aloudSpanStart)
+        renderCallBack?.upContent(resetPageOffset = false)
     }
 
     /**

@@ -681,6 +681,16 @@ class ReadConfigUpdateDelegate(
                     readSettingsRepository.setAutoSuggestDayNight(update.value)
                 }
             }
+            is ConfigUpdate.ReadingAnchorEnabled -> {
+                scope.launch {
+                    readSettingsRepository.setReadingAnchorEnabled(update.value)
+                }
+            }
+            is ConfigUpdate.ReadAloudDetachReminderEnabled -> {
+                scope.launch {
+                    readSettingsRepository.setReadAloudDetachReminderEnabled(update.value)
+                }
+            }
             is ConfigUpdate.SelectText -> {
                 scope.launch {
                     readSettingsRepository.setSelectText(update.value)

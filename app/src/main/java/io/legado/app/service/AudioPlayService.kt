@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.AudioManager
+import android.media.audiofx.LoudnessEnhancer
 import android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
 import android.os.Build
 import android.os.Bundle
@@ -20,6 +21,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media.AudioFocusRequestCompat
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import io.legado.app.R
 import io.legado.app.base.BaseService
@@ -32,7 +34,6 @@ import io.legado.app.constant.Status
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.config.AppConfig
-import io.legado.app.ui.config.readConfig.ReadConfig
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
@@ -40,7 +41,8 @@ import io.legado.app.model.AudioPlay
 import io.legado.app.model.analyzeRule.AnalyzeUrl
 import io.legado.app.model.analyzeRule.AnalyzeUrl.Companion.getMediaItem
 import io.legado.app.receiver.MediaButtonReceiver
-import io.legado.app.ui.book.audio.AudioPlayActivity
+import io.legado.app.ui.config.readConfig.ReadConfig
+import io.legado.app.ui.main.MainActivity
 import io.legado.app.utils.activityPendingIntent
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.printOnDebug
@@ -56,6 +58,7 @@ import splitties.systemservices.audioManager
 import splitties.systemservices.notificationManager
 import splitties.systemservices.powerManager
 import splitties.systemservices.wifiManager
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 音频播放服务
@@ -120,6 +123,7 @@ class AudioPlayService : BaseService(),
     private var upNotificationJob: Coroutine<*>? = null
     private var upPlayProgressJob: Job? = null
     private var playSpeed: Float = 1f
+    private var loudnessEnhancer: LoudnessEnhancer? = null
     private var cover: Bitmap =
         BitmapFactory.decodeResource(appCtx.resources, R.drawable.ic_launcher)!!
 
@@ -179,6 +183,7 @@ class AudioPlayService : BaseService(),
                 IntentAction.prev -> AudioPlay.prev()
                 IntentAction.next -> AudioPlay.next()
                 IntentAction.adjustSpeed -> upSpeed(intent.getFloatExtra("adjust", 1f))
+                IntentAction.adjustGain -> applyGain(intent.getIntExtra("gain", 0))
                 IntentAction.addTimer -> addTimer()
                 IntentAction.setTimer -> setTimer(intent.getIntExtra("minute", 0))
                 IntentAction.adjustProgress -> {
@@ -200,6 +205,8 @@ class AudioPlayService : BaseService(),
         isRun = false
         abandonFocus()
         exoPlayer.release()
+        loudnessEnhancer?.release()
+        loudnessEnhancer = null
         mediaSessionCompat?.release()
         unregisterReceiver(broadcastReceiver)
         upMediaSessionPlaybackState(PlaybackStateCompat.STATE_STOPPED)
@@ -237,7 +244,10 @@ class AudioPlayService : BaseService(),
             )
             exoPlayer.setMediaItem(analyzeUrl.getMediaItem())
             exoPlayer.playWhenReady = true
-            exoPlayer.seekTo(position.toLong())
+            // 片头跳过设定（仅从头播放时生效）
+            val skipStartMs = (AudioPlay.book?.getOpenCredits() ?: 0) * 1000L
+            val playtime = if (position == 0) skipStartMs else position.toLong()
+            exoPlayer.seekTo(playtime)
             exoPlayer.prepare()
         }.onError {
             AppLog.put("播放出错\n${it.localizedMessage}", it)
@@ -339,6 +349,7 @@ class AudioPlayService : BaseService(),
             Player.STATE_READY -> {
                 // 准备好
                 AudioPlay.upLoading(false)
+                applyGain(AudioPlay.book?.getAudioGain() ?: 0)
                 if (exoPlayer.playWhenReady) {
                     AudioPlay.status = Status.PLAY
                     postEvent(EventBus.AUDIO_STATE, Status.PLAY)
@@ -428,16 +439,50 @@ class AudioPlayService : BaseService(),
      */
     private fun upPlayProgress() {
         upPlayProgressJob?.cancel()
+        val skipEnds = AudioPlay.book?.getCloseCredits() ?: 0
         upPlayProgressJob = lifecycleScope.launch {
             while (isActive) {
+                val durP = exoPlayer.currentPosition
                 //更新buffer位置
-                AudioPlay.playPositionChanged(exoPlayer.currentPosition.toInt())
+                AudioPlay.playPositionChanged(durP.toInt())
                 postEvent(EventBus.AUDIO_BUFFER_PROGRESS, exoPlayer.bufferedPosition.toInt())
                 postEvent(EventBus.AUDIO_PROGRESS, AudioPlay.durChapterPos)
                 postEvent(EventBus.AUDIO_SIZE, exoPlayer.duration.toInt())
                 upMediaSessionPlaybackState(PlaybackStateCompat.STATE_PLAYING)
-                delay(1000)
+                // 片尾跳过检查
+                if (skipEnds > 0) {
+                    val duration = exoPlayer.duration
+                    if (duration > 0 && durP >= duration - (skipEnds * 1000L)) {
+                        upPlayProgressJob?.cancel()
+                        AudioPlay.playPositionChanged(duration.toInt())
+                        pause = true
+                        AudioPlay.next()
+                    }
+                }
+                delay(1000.milliseconds)
             }
+        }
+    }
+
+    /**
+     * 应用音频增益（LoudnessEnhancer，单位 mB，范围 -6000..6000）
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun applyGain(gain: Int) {
+        try {
+            if (gain == 0) {
+                loudnessEnhancer?.release()
+                loudnessEnhancer = null
+                return
+            }
+            if (loudnessEnhancer == null) {
+                loudnessEnhancer = LoudnessEnhancer(exoPlayer.audioSessionId).apply {
+                    setEnabled(true)
+                }
+            }
+            loudnessEnhancer?.setTargetGain(gain.coerceIn(-6000, 6000))
+        } catch (e: Exception) {
+            AppLog.put("设置音频增益失败: ${e.localizedMessage}", e)
         }
     }
 
@@ -588,7 +633,10 @@ class AudioPlayService : BaseService(),
             .setContentTitle(nTitle)
             .setContentText(nSubtitle)
             .setContentIntent(
-                activityPendingIntent<AudioPlayActivity>("activity")
+                activityPendingIntent(
+                    MainActivity.createAudioPlayIntent(this@AudioPlayService),
+                    "activity",
+                )
             )
         builder.setLargeIcon(cover)
         builder.addAction(

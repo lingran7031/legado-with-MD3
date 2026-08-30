@@ -14,11 +14,11 @@ import kotlin.reflect.full.primaryConstructor
 class ReadSettingsMappingTest {
 
     @Test
-    fun `gateway 持久化映射覆盖 ReadSettings 全部 109 个字段`() {
+    fun `gateway 持久化映射覆盖 ReadSettings 全部 111 个字段`() {
         val actualKeys = ReadSettings().toGatewayPrefMap().keys
         val expectedKeys = ReadSettings().expectedGatewayPrefMap().keys
 
-        assertEquals(109, actualKeys.size)
+        assertEquals(111, actualKeys.size)
         assertEquals(expectedKeys, actualKeys)
     }
 
@@ -95,7 +95,7 @@ class ReadSettingsMappingTest {
         assertFalse(settings.readMenuIconShowText)
         assertTrue(settings.readMenuFloatingBottomBar)
         assertEquals(ReadMenuBlurStyle.Solid, settings.readMenuTopBarBlurStyle)
-        assertEquals(100, settings.readMenuBlurAlpha)
+        assertEquals(85, settings.readMenuBlurAlpha)
         assertEquals(1, settings.readMenuBorderWidth)
         assertEquals(3, settings.titleBarIconPosition)
         assertFalse(settings.showTitleBarIcons)
@@ -211,6 +211,8 @@ private fun readSettingsMappingSamples(): List<ReadSettings> {
         base.copy(selectVibrator = true),
         base.copy(autoChangeSource = false),
         base.copy(autoSuggestDayNight = true),
+        base.copy(readingAnchorEnabled = false),
+        base.copy(readAloudDetachReminderEnabled = true),
         base.copy(selectText = false),
         base.copy(noAnimScrollPage = true),
         base.copy(optimizeRender = true),
@@ -257,6 +259,8 @@ private fun ReadSettings.expectedGatewayPrefMap(): Map<String, Any?> = mapOf(
     PreferKey.selectVibrator to selectVibrator,
     PreferKey.autoChangeSource to autoChangeSource,
     PreferKey.autoSuggestDayNight to autoSuggestDayNight,
+    PreferKey.readingAnchorEnabled to readingAnchorEnabled,
+    PreferKey.readAloudDetachReminderEnabled to readAloudDetachReminderEnabled,
     PreferKey.selectText to selectText,
     PreferKey.noAnimScrollPage to noAnimScrollPage,
     PreferKey.clickImgWay to clickImgWay,
