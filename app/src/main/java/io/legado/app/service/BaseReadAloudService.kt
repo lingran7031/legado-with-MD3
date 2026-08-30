@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Bundle
@@ -61,6 +62,7 @@ import io.legado.app.ui.main.MainActivity
 import io.legado.app.utils.LogUtils
 import io.legado.app.utils.activityPendingIntent
 import io.legado.app.utils.getPrefBoolean
+import io.legado.app.utils.isNightMode
 import io.legado.app.utils.observeEvent
 import io.legado.app.utils.postEvent
 import io.legado.app.utils.toastOnUi
@@ -1185,6 +1187,14 @@ abstract class BaseReadAloudService : BaseService(),
             .setVibrate(null)
             .setSound(null)
             .setLights(0, 0, 0)
+            .apply {
+                if (!resources.configuration.isNightMode) {
+                    // Some OEM media controls derive a white progress tint from light artwork.
+                    // Keep the system surface and provide a contrasting accent in light mode.
+                    setColor(Color.BLACK)
+                    setColorized(false)
+                }
+            }
             .addAction(
                 R.drawable.ic_skip_previous,
                 previousLabel,
