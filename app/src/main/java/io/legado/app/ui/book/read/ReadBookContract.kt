@@ -20,8 +20,6 @@ import io.legado.app.domain.model.readaloud.SpeechRoleType
 import io.legado.app.domain.model.settings.ReadStyleItem
 import io.legado.app.domain.usecase.BookmarkTargetVerdict
 import io.legado.app.model.translation.TranslationChapterStatus
-import io.legado.app.ui.book.read.page.entities.TextChapter
-import io.legado.app.ui.book.read.page.entities.TextPos
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetTab
 import io.legado.app.ui.book.searchContent.SearchResult
 import kotlinx.collections.immutable.ImmutableList
@@ -252,8 +250,6 @@ data class ReadBookUiState(
     // Translation
     val translationMode: Boolean = false,
     val translationStatus: TranslationChapterStatus = TranslationChapterStatus.Idle,
-    // Chapter info
-    val curTextChapter: TextChapter? = null,
     // Time / battery (from EventBus)
     val time: String = "",
     val battery: Int = 0,
@@ -689,7 +685,10 @@ sealed interface ReadBookIntent {
 
     // Default font picker (needs Activity for AlertDialog)
     // Text action menu (moved from Activity)
-    data class TextActionAloud(val text: String, val selectStartPos: TextPos?) : ReadBookIntent
+    data class TextActionAloud(
+        val text: String,
+        val chapterPosition: Int? = null,
+    ) : ReadBookIntent
     data class TextActionBookmark(val bookmark: Bookmark) : ReadBookIntent
     data class OpenMarking(val selection: Bookmark) : ReadBookIntent
 
@@ -837,8 +836,8 @@ sealed interface ReadBookEffect {
     // Navigation / lifecycle
     data object Finish : ReadBookEffect
 
-    // ReadView operations (require Activity/View reference)
-    data class UpdateReadViewConfig(val actions: Set<ConfigUpdateAction>) : ReadBookEffect
+    // Reader renderer operations handled by the route/controller boundary.
+    data class UpdateReaderConfig(val actions: Set<ConfigUpdateAction>) : ReadBookEffect
     data class UpContent(
         val relativePosition: Int,
         val resetPageOffset: Boolean,
@@ -875,16 +874,7 @@ sealed interface ReadBookEffect {
         val bookUrl: String,
         val autoFocus: Boolean = true,
     ) : ReadBookEffect
-    data class NavigateToSearchResult(
-        val result: SearchResult,
-        val chapterIndex: Int,
-        val pageIndex: Int,
-        val lineIndex: Int,
-        val startCharIndex: Int,
-        val endRelativePage: Int,
-        val endLineIndex: Int,
-        val endCharIndex: Int,
-    ) : ReadBookEffect
+    data class NavigateToSearchResult(val result: SearchResult) : ReadBookEffect
     data object ExitSearch : ReadBookEffect
 
     // Source actions
@@ -918,7 +908,7 @@ sealed interface ReadBookEffect {
     data class SyncBookProgress(val book: Book) : ReadBookEffect
 
     // Text action menu (needs Activity for View operations)
-    data class TextActionAloudSelect(val selectStartPos: TextPos) : ReadBookEffect
+    data class TextActionAloudPosition(val chapterPosition: Int) : ReadBookEffect
     data class TextActionSpeak(val text: String) : ReadBookEffect
     data class TextActionReplace(val text: String, val bookName: String?, val bookSourceUrl: String?) : ReadBookEffect
 
@@ -955,6 +945,7 @@ sealed interface ReadBookEffect {
 
     // Page anim changed — Activity calls readView.upPageAnim() + ReadBook.loadContent(false)
     data object PageAnimChanged : ReadBookEffect
+    data class InvalidateReaderImage(val source: String) : ReadBookEffect
 
     // Download chapters — Activity calls CacheBook.start()
     data class DownloadChapters(val start: Int, val end: Int) : ReadBookEffect

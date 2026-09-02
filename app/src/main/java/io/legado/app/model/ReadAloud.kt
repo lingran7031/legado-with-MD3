@@ -119,7 +119,9 @@ object ReadAloud {
         context: Context,
         play: Boolean = true,
         pageIndex: Int = ReadBook.durPageIndex,
-        startPos: Int = 0
+        startPos: Int = 0,
+        /** Absolute position in the processed chapter; preferred by the Canvas reader. */
+        chapterPosition: Int? = null,
     ) {
         if (!BaseReadAloudService.isRun) {
             aloudClass = getReadAloudClass()
@@ -129,6 +131,7 @@ object ReadAloud {
         intent.putExtra("play", play)
         intent.putExtra("pageIndex", pageIndex)
         intent.putExtra("startPos", startPos)
+        chapterPosition?.let { intent.putExtra("chapterPosition", it) }
         LogUtils.d("ReadAloud", intent.toString())
         try {
             context.startForegroundServiceCompat(intent)
@@ -142,12 +145,14 @@ object ReadAloud {
     fun playByEventBus(
         play: Boolean = true,
         pageIndex: Int = ReadBook.durPageIndex,
-        startPos: Int = 0
+        startPos: Int = 0,
+        chapterPosition: Int? = null,
     ) {
         val bundle = Bundle().apply {
             putBoolean("play", play)
             putInt("pageIndex", pageIndex)
             putInt("startPos", startPos)
+            chapterPosition?.let { putInt("chapterPosition", it) }
         }
         postEvent(EventBus.READ_ALOUD_PLAY, bundle)
     }

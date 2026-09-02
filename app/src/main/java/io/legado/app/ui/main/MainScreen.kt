@@ -133,7 +133,7 @@ fun MainScreen(
     onNavigateToLocalImport: () -> Unit,
     onNavigateToCache: (Long) -> Unit,
     onNavigateToBookCacheManage: () -> Unit,
-    onOpenBookshelfBook: (BookShelfItem) -> Unit,
+    onOpenBookshelfBook: (BookShelfItem, String?) -> Unit,
     onNavigateToBackupSettings: () -> Unit,
     onNavigateToBookInfo: (name: String, author: String, bookUrl: String, origin: String?, coverPath: String?, sharedCoverKey: String?) -> Unit,
     onNavigateToExploreShow: (title: String?, sourceUrl: String, exploreUrl: String?) -> Unit,
@@ -553,8 +553,8 @@ fun MainScreen(
                                         bookshelfScrollToTopRequest = 0L
                                     }
                                 },
-                                onBookClick = { book ->
-                                    onOpenBookshelfBook(book)
+                                onBookClick = { book, sharedCoverKey ->
+                                    onOpenBookshelfBook(book, sharedCoverKey)
                                 },
                                 onBookLongClick = { book, sharedCoverKey ->
                                     onNavigateToBookInfo(

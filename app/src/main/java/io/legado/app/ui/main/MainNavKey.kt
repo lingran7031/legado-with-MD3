@@ -132,6 +132,7 @@ data class MainRouteReadBook(
     val readAloud: Boolean = false,
     val inBookshelf: Boolean = true,
     val chapterChanged: Boolean = false,
+    val sharedCoverKey: String? = null,
 ) : MainRoute
 
 @Serializable

@@ -9,32 +9,45 @@ import android.hardware.SensorManager
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
-import android.view.ViewTreeObserver
-import android.widget.FrameLayout
-import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -48,15 +61,16 @@ import io.legado.app.R
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.BookType
 import io.legado.app.constant.ReadMenuBlurMode
+import io.legado.app.feature.reader.ReaderCanvasSurface
+import io.legado.app.feature.reader.ReaderBackgroundSurface
+import io.legado.app.feature.reader.core.gesture.ReaderTapActionGrid
+import io.legado.app.feature.reader.core.model.readerBackgroundAlpha
+import io.legado.app.feature.reader.core.transition.ReaderTransitionMode
 import io.legado.app.help.IntentHelp
 import io.legado.app.model.ReadBook
 import io.legado.app.model.SourceCallBack
 import io.legado.app.model.translation.TranslationChapterStatus
 import io.legado.app.ui.book.info.BookInfoActivity
-import io.legado.app.ui.book.read.page.ContentTextView
-import io.legado.app.ui.book.read.page.ReadView
-import io.legado.app.ui.book.read.page.ReaderEventListener
-import io.legado.app.ui.book.read.page.ReaderPageSource
 import io.legado.app.ui.book.read.page.entities.PageDirection
 import io.legado.app.ui.book.read.sheet.ReaderBookSheetRoute
 import io.legado.app.ui.book.read.sheet.ReaderBookSourceActions
@@ -68,6 +82,8 @@ import io.legado.app.ui.main.MainActivity
 import io.legado.app.ui.replace.ReplaceEditRoute
 import io.legado.app.ui.replace.ReplaceRuleActivity
 import io.legado.app.ui.theme.LocalAppUiConfiguration
+import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.widget.components.text.AppText
 import io.legado.app.utils.StartActivityContract
 import io.legado.app.utils.takePersistablePermissionSafely
 import io.legado.app.utils.toastOnUi
@@ -82,27 +98,15 @@ import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
 
-data class ReadBookViewRefs(
-    val root: FrameLayout,
-    val readView: ReadView,
-    val textMenuPosition: View,
-    val cursorLeft: ImageView,
-    val cursorRight: ImageView,
-    val navigationBar: View,
-)
-
-interface ReadBookRouteHost :
-    View.OnTouchListener,
-    ReadView.CallBack,
-    ReaderEventListener,
-    ReaderPageSource,
-    ContentTextView.CallBack {
+interface ReadBookRouteHost {
 
     val isInMultiWindowModeCompat: Boolean
 
     fun closeReadBook()
 
     fun previewBrightness(value: Int)
+
+    fun upSystemUiVisibility()
 
     fun upSystemUiVisibility(
         isInMultiWindow: Boolean,
@@ -126,11 +130,16 @@ interface ReadBookInputHandler {
  * Outer wrapper for ReadBookScreen — handles system UI state sync
  * and ActivityResult launcher registration.
  */
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun ReadBookRouteScreen(
     viewModel: ReadBookViewModel,
+    readerSessionViewModel: ReaderSessionViewModel,
     host: ReadBookRouteHost,
     controller: ReadBookController,
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    sharedCoverKey: String? = null,
     onEffectsReady: () -> Unit = {},
     onOpenSearch: (word: String?, bookUrl: String, autoFocus: Boolean) -> Unit = { _, _, _ -> },
     onOpenVoiceCasting: (bookUrl: String) -> Unit = {},
@@ -138,16 +147,26 @@ fun ReadBookRouteScreen(
     onOpenTtsCache: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val aiState by viewModel.aiState.collectAsStateWithLifecycle()
-    val highlightRuleState by viewModel.highlightRuleState.collectAsStateWithLifecycle()
-    val markingState by viewModel.markingState.collectAsStateWithLifecycle()
-    val contentEditState by viewModel.contentEditState.collectAsStateWithLifecycle()
-    val contentProcessState by viewModel.contentProcessState.collectAsStateWithLifecycle()
     val readPreferences by viewModel.readPreferences.collectAsStateWithLifecycle()
-    val textMenuState by controller.textMenuState.collectAsStateWithLifecycle()
+    val readerRenderState by readerSessionViewModel.uiState.collectAsStateWithLifecycle()
+    val readerPageWindow = readerRenderState.pageWindow
+    val readerPaginationError = readerRenderState.paginationError
+    val readerBackground = readerRenderState.background
+    val localDensity = LocalDensity.current
+    val density = localDensity.density
+    val layoutDirection = LocalLayoutDirection.current
+    val safeDrawingInsets = WindowInsets.safeDrawing
+    val readerContentPadding = ReaderPadding(
+        left = safeDrawingInsets.getLeft(localDensity, layoutDirection),
+        top = safeDrawingInsets.getTop(localDensity),
+        right = safeDrawingInsets.getRight(localDensity, layoutDirection),
+        bottom = safeDrawingInsets.getBottom(localDensity),
+    )
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val isDarkTheme = LocalAppUiConfiguration.current.isDarkTheme
+    val appUiConfiguration = LocalAppUiConfiguration.current
+    val isDarkTheme = appUiConfiguration.isDarkTheme
+    val isEInkMode = appUiConfiguration.theme.appTheme == "4"
     val eyeProtectionActive = rememberEyeProtectionActive(
         enabled = state.eyeProtection.enabled,
         autoNight = state.eyeProtection.autoNight,
@@ -165,15 +184,21 @@ fun ReadBookRouteScreen(
                     !state.menuConfig.readMenuFloatingBottomBar &&
                             state.menuConfig.readMenuBottomBarBlurMode == ReadMenuBlurMode.LiquidGlass
                     )
-
-    DisposableEffect(controller) {
-        onDispose {
-            controller.clearAppThemeOverride()
+    BackHandler {
+        when {
+            state.activeSheet != null -> viewModel.onIntent(ReadBookIntent.DismissSheet)
+            state.isShowingSearchResult -> viewModel.onIntent(ReadBookIntent.ExitSearch)
+            state.isAutoPage -> viewModel.onIntent(ReadBookIntent.StopAutoPage)
+            state.menuState.canNavigateBack -> viewModel.onIntent(ReadBookIntent.ReadMenuBack)
+            else -> viewModel.onIntent(ReadBookIntent.CloseReadBook())
         }
     }
-
-    LaunchedEffect(state.menuVisible) {
-        controller.onMenuVisibilityChanged(state.menuVisible)
+    DisposableEffect(controller) {
+        controller.onComposeRendererAttached()
+        onDispose {
+            controller.onComposeRendererDetached()
+            controller.clearAppThemeOverride()
+        }
     }
 
     LaunchedEffect(viewModel, controller, lifecycleOwner) {
@@ -517,22 +542,126 @@ fun ReadBookRouteScreen(
     // ── View layer + Compose UI ───────────────────────────────────────
 
     var showSelectMenuConfigSheet by rememberSaveable { mutableStateOf(false) }
+    var featureOverlaysInitialized by remember { mutableStateOf(false) }
+    val featureOverlayRequested = state.activeSheet != null ||
+        state.activeDialog != null ||
+        state.pendingBookmarkTarget != null
+    LaunchedEffect(featureOverlayRequested) {
+        if (featureOverlayRequested) featureOverlaysInitialized = true
+    }
 
-    val firstFrameTracker = remember(controller) {
+    val firstFrameStartedAtNanos = remember(controller) {
         val requestedStart = controller.activity.intent.getLongExtra(
             EXTRA_FIRST_FRAME_STARTED_AT_NANOS,
             0L,
         )
-        ReaderFirstFrameTracker(
-            startedAtNanos = requestedStart.takeIf { it > 0L }
-                ?: SystemClock.elapsedRealtimeNanos(),
-        )
+        requestedStart.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
+    }
+    val loadingFrameTracker = remember(controller) {
+        ReaderFirstFrameTracker(firstFrameStartedAtNanos)
+    }
+    val contentFrameTracker = remember(controller) {
+        ReaderFirstFrameTracker(firstFrameStartedAtNanos)
+    }
+    LaunchedEffect(Unit) {
+        withFrameNanos { }
+        loadingFrameTracker.report(ReaderStartupFramePhase.LOADING)
+    }
+    LaunchedEffect(isDarkTheme) {
+        controller.onAppThemeChanged(isDarkTheme)
+    }
+    LaunchedEffect(readerPageWindow.current?.id, readerPageWindow.current?.layoutRevision) {
+        if (readerPageWindow.current != null) {
+            withFrameNanos { }
+            contentFrameTracker.report(ReaderStartupFramePhase.CONTENT)
+        }
     }
 
-    Box(Modifier.fillMaxSize()) {
-        key(controller) {
-            ReadBookViewLayer(
+    val readerSurfaceColor = Color(
+        readerBackground.meanColorArgb.takeIf { it != 0 } ?: runCatching {
+            android.graphics.Color.parseColor(
+                if (isDarkTheme) state.styleConfig.bgStrNight else state.styleConfig.bgStr
+            )
+        }.getOrDefault(
+            if (isDarkTheme) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+        )
+    )
+    val readerEntranceSettled = animatedVisibilityScope?.transition?.let { transition ->
+        !transition.isRunning &&
+            transition.currentState == EnterExitState.Visible &&
+            transition.targetState == EnterExitState.Visible
+    } ?: true
+    LaunchedEffect(readerEntranceSettled) {
+        controller.onReaderEntranceStateChanged(readerEntranceSettled)
+        if (readerEntranceSettled) viewModel.onReaderEntranceSettled()
+    }
+    val hasReadablePage = readerPageWindow.current != null && state.msg == null
+    var readerContentRevealAllowed by remember(sharedCoverKey) {
+        mutableStateOf(sharedCoverKey == null || animatedVisibilityScope == null)
+    }
+    LaunchedEffect(sharedCoverKey, animatedVisibilityScope) {
+        if (!readerContentRevealAllowed) {
+            delay(300)
+            readerContentRevealAllowed = true
+        }
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .then(
+                with(sharedTransitionScope) {
+                    if (this != null &&
+                        animatedVisibilityScope != null &&
+                        sharedCoverKey != null
+                    ) {
+                        Modifier.sharedBounds(
+                            sharedContentState = rememberSharedContentState(sharedCoverKey),
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            enter = fadeIn(animationSpec = tween(600)),
+                            exit = fadeOut(animationSpec = tween(600)),
+                        )
+                    } else {
+                        Modifier
+                    }
+                }
+            )
+            .background(readerSurfaceColor)
+    ) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .onSizeChanged { size ->
+                controller.onComposeReaderViewportChanged(
+                    widthPx = size.width,
+                    heightPx = size.height,
+                    density = density,
+                    contentPadding = readerContentPadding,
+                )
+            }
+        ) {
+            ReaderBackgroundSurface(
+                backgroundImage = readerBackground.drawable,
+                backgroundImageAlpha = readerBackgroundAlpha(state.styleConfig.bgAlpha),
+                modifier = Modifier.fillMaxSize(),
+                animateAppearance = true,
+            )
+            AnimatedVisibility(
+                visible = readerContentRevealAllowed && hasReadablePage,
+                enter = fadeIn(animationSpec = tween(450)),
+                exit = fadeOut(animationSpec = tween(450)),
+            ) {
+                ReaderCanvasSurface(
+                pages = readerPageWindow,
+                transitionMode = ReaderTransitionMode.fromPageAnim(controller.pageAnim),
+                backgroundColor = readerSurfaceColor,
+                backgroundImage = readerBackground.drawable,
+                backgroundRevision = readerBackground.revision,
+                backgroundImageAlpha = readerBackgroundAlpha(state.styleConfig.bgAlpha),
+                selectionColor = LegadoTheme.colorScheme.primary.copy(alpha = 0.28f),
+                textAccentColor = Color(state.sheetConfig.textAccentColor),
+                autoPageIndicatorColor = LegadoTheme.colorScheme.primary,
                 modifier = Modifier
+                    .fillMaxSize()
                     .then(
                         if (useMenuHazeSource) {
                             Modifier.hazeSource(menuHazeState)
@@ -541,16 +670,79 @@ fun ReadBookRouteScreen(
                         }
                     )
                     .layerBackdrop(menuBackdrop),
-                onRefsReady = { controller.onRefsReady(it) },
-                onCursorTouch = controller,
-                readViewCallBack = controller,
-                readerEventListener = controller,
-                readerPageSource = controller,
-                contentTextViewCallBack = controller,
-                isDarkTheme = isDarkTheme,
-                onThemeChanged = controller::onAppThemeChanged,
-                onFirstContentDrawn = firstFrameTracker::report,
-            )
+                onPreviousPage = { controller.completeComposePageTurn(PageDirection.PREV) },
+                onNextPage = { controller.completeComposePageTurn(PageDirection.NEXT) },
+                onToggleMenu = controller::showComposeActionMenu,
+                onToggleBookmark = { viewModel.onIntent(ReadBookIntent.ToggleBookmark) },
+                swipeToBookmarkEnabled = readPreferences.swipeToAddBookmark,
+                hasBookmarkOnCurrentPage = controller::hasBookmarkOnComposePage,
+                cachedImage = controller::cachedReaderImage,
+                loadImage = controller::loadReaderImage,
+                autoPageActive = state.isAutoPage,
+                autoPagePaused = state.menuVisible,
+                autoReadSpeedSeconds = readPreferences.autoReadSpeed,
+                isEInkMode = isEInkMode,
+                onAutoPageStop = controller::stopAutoPage,
+                onShowSelectionMenu = controller::showComposeTextActionMenu,
+                onDismissSelectionMenu = controller::dismissTextActionMenu,
+                onElementClick = controller::onComposeReaderElementClick,
+                onElementLongPress = controller::onComposeReaderElementLongPress,
+                selectionEnabled = readPreferences.selectText,
+                selectionHapticsEnabled = readPreferences.selectVibrator,
+                tapActionGrid = ReaderTapActionGrid.fromLegacyValues(
+                    readPreferences.clickActionTL,
+                    readPreferences.clickActionTC,
+                    readPreferences.clickActionTR,
+                    readPreferences.clickActionML,
+                    readPreferences.clickActionMC,
+                    readPreferences.clickActionMR,
+                    readPreferences.clickActionBL,
+                    readPreferences.clickActionBC,
+                    readPreferences.clickActionBR,
+                ),
+                onTapAction = controller::onComposeTapAction,
+                onReaderInteraction = controller::screenOffTimerStart,
+                configuredTouchSlopPx = readPreferences.pageTouchSlop,
+                noAnimationScrollPage = readPreferences.noAnimScrollPage,
+                externalPageTurns = controller.composePageTurns,
+                externalSelectionCancels = controller.composeSelectionCancels,
+                )
+            }
+            AnimatedVisibility(
+                visible = readerEntranceSettled && !hasReadablePage,
+                enter = fadeIn(animationSpec = tween(300)),
+                exit = fadeOut(animationSpec = tween(300)),
+            ) {
+                val message = state.msg ?: if (readerPaginationError != null) {
+                    stringResource(R.string.load_error_retry)
+                } else {
+                    stringResource(R.string.data_loading)
+                }
+                val retryable = state.msg == null && readerPaginationError != null
+                val retryLabel = stringResource(R.string.dynamic_click_retry)
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (retryable) {
+                                Modifier.clickable(
+                                    role = Role.Button,
+                                    onClickLabel = retryLabel,
+                                    onClick = controller::retryComposeReaderPagination,
+                                )
+                            } else {
+                                Modifier
+                            }
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    AppText(
+                        text = if (retryable) "$message\n$retryLabel" else message,
+                        color = LegadoTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
         }
         ReadBookColorTheme(
             styleConfig = state.styleConfig,
@@ -561,7 +753,13 @@ fun ReadBookRouteScreen(
                 state = state,
                 preferences = readPreferences,
                 eyeProtectionActive = eyeProtectionActive,
-                onIntent = viewModel::onIntent,
+                onIntent = { intent ->
+                    if (intent !is ReadBookIntent.SkipToPage ||
+                        !controller.seekComposeChapterPage(intent.pageIndex)
+                    ) {
+                        viewModel.onIntent(intent)
+                    }
+                },
                 onBrightnessPreview = host::previewBrightness,
                 backdrop = menuBackdrop,
                 hazeState = if (useMenuHazeSource) menuHazeState else null,
@@ -600,23 +798,21 @@ fun ReadBookRouteScreen(
                     onOpenPlayer = { viewModel.onIntent(ReadBookIntent.OpenReadAloudPlayer) },
                 )
             }
-            ReadBookScreen(
-                state = state,
-                aiState = aiState,
-                highlightRuleState = highlightRuleState,
-                markingState = markingState,
-                contentEditState = contentEditState,
-                contentProcessState = contentProcessState,
-                preferences = readPreferences,
-                onIntent = viewModel::onIntent,
-                onBack = { controller.closeReadBook() },
-                onOpenTextSelectMenuConfig = {
-                    viewModel.onIntent(ReadBookIntent.DismissSheet)
-                    showSelectMenuConfigSheet = true
-                },
-                onPickBookmarkBadgeImage = { bookmarkBadgeImagePicker.launch("image/*") },
-                onResetBookmarkBadge = { viewModel.onIntent(ReadBookIntent.ClearBookmarkBadgeImage) },
-            )
+            if (featureOverlaysInitialized) {
+                ReadBookOverlayRoute(
+                    viewModel = viewModel,
+                    state = state,
+                    preferences = readPreferences,
+                    onOpenTextSelectMenuConfig = {
+                        viewModel.onIntent(ReadBookIntent.DismissSheet)
+                        showSelectMenuConfigSheet = true
+                    },
+                    onPickBookmarkBadgeImage = { bookmarkBadgeImagePicker.launch("image/*") },
+                    onResetBookmarkBadge = {
+                        viewModel.onIntent(ReadBookIntent.ClearBookmarkBadgeImage)
+                    },
+                )
+            }
             val bookNavigationSheet = state.activeSheet as? ReadBookSheet.BookNavigation
             ReaderBookSheetRoute(
                 show = bookNavigationSheet != null,
@@ -663,16 +859,10 @@ fun ReadBookRouteScreen(
                     onDisable = { viewModel.onIntent(ReadBookIntent.DisableSource) },
                 ),
             )
-            TextActionSelectionMenu(
-                menuState = textMenuState,
+            ReaderTextSelectionOverlay(
+                controller = controller,
                 expandTextMenu = readPreferences.expandTextMenu,
-                onDismiss = { controller.dismissTextActionMenu() },
-                onItemClick = { item -> controller.onTextMenuItemClick(item) },
-                onOpenManage = {
-                    controller.dismissTextActionMenu()
-                    controller.refs?.readView?.cancelSelect()
-                    showSelectMenuConfigSheet = true
-                }
+                onOpenManage = { showSelectMenuConfigSheet = true },
             )
             var configItems by remember { mutableStateOf<List<ActionMenuItem>>(emptyList()) }
             LaunchedEffect(showSelectMenuConfigSheet) {
@@ -702,107 +892,24 @@ fun ReadBookRouteScreen(
 }
 
 @Composable
-private fun ReadBookViewLayer(
-    modifier: Modifier = Modifier,
-    onRefsReady: (ReadBookViewRefs) -> Unit,
-    onCursorTouch: View.OnTouchListener,
-    readViewCallBack: ReadView.CallBack,
-    readerEventListener: ReaderEventListener,
-    readerPageSource: ReaderPageSource,
-    contentTextViewCallBack: ContentTextView.CallBack,
-    isDarkTheme: Boolean,
-    onThemeChanged: (Boolean) -> Unit,
-    onFirstContentDrawn: () -> Unit,
+private fun ReaderTextSelectionOverlay(
+    controller: ReadBookController,
+    expandTextMenu: Boolean,
+    onOpenManage: () -> Unit,
 ) {
-    AndroidView(
-        modifier = modifier.fillMaxSize(),
-        factory = { context ->
-            onThemeChanged(isDarkTheme)
-            FrameLayout(context).apply {
-                val readView = ReadView(
-                    context = context,
-                    callBack = readViewCallBack,
-                    contentCallBack = contentTextViewCallBack,
-                    eventListener = readerEventListener,
-                    pageSource = readerPageSource,
-                ).apply {
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                    )
-                }
-                val textMenuPosition = View(context).apply {
-                    id = R.id.text_menu_position
-                    visibility = View.INVISIBLE
-                    layoutParams = FrameLayout.LayoutParams(0, 0)
-                }
-                val cursorLeft = ImageView(context).apply {
-                    id = R.id.cursor_left
-                    contentDescription = context.getString(R.string.select_start)
-                    setImageResource(R.drawable.ic_cursor_left)
-                    visibility = View.INVISIBLE
-                    setOnTouchListener(onCursorTouch)
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                }
-                val cursorRight = ImageView(context).apply {
-                    id = R.id.cursor_right
-                    contentDescription = context.getString(R.string.select_end)
-                    setImageResource(R.drawable.ic_cursor_right)
-                    visibility = View.INVISIBLE
-                    setOnTouchListener(onCursorTouch)
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                    )
-                }
-                val navigationBar = View(context).apply {
-                    id = R.id.navigation_bar
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.MATCH_PARENT,
-                        0,
-                        android.view.Gravity.BOTTOM,
-                    )
-                }
-
-                addView(readView)
-                addView(textMenuPosition)
-                addView(cursorLeft)
-                addView(cursorRight)
-                addView(navigationBar)
-
-                onRefsReady(
-                    ReadBookViewRefs(
-                        root = this,
-                        readView = readView,
-                        textMenuPosition = textMenuPosition,
-                        cursorLeft = cursorLeft,
-                        cursorRight = cursorRight,
-                        navigationBar = navigationBar,
-                    )
-                )
-                val root = this
-                val firstDrawListener = object : ViewTreeObserver.OnDrawListener {
-                    override fun onDraw() {
-                        if (readView.curPage.textPage.lines.isEmpty()) return
-                        onFirstContentDrawn()
-                        root.post {
-                            if (root.viewTreeObserver.isAlive) {
-                                root.viewTreeObserver.removeOnDrawListener(this)
-                            }
-                        }
-                    }
-                }
-                viewTreeObserver.addOnDrawListener(firstDrawListener)
-            }
-        },
-        update = {
-            onThemeChanged(isDarkTheme)
+    val textMenuState by controller.textMenuState.collectAsStateWithLifecycle()
+    TextActionSelectionMenu(
+        menuState = textMenuState,
+        expandTextMenu = expandTextMenu,
+        onDismiss = controller::dismissTextActionMenu,
+        onItemClick = controller::onTextMenuItemClick,
+        onOpenManage = {
+            controller.dismissTextActionMenu()
+            onOpenManage()
         },
     )
 }
+
 
 @Composable
 private fun AutoSuggestDayNightObserver(

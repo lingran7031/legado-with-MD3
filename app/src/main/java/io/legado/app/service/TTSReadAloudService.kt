@@ -4,18 +4,18 @@ package io.legado.app.service
 import android.app.PendingIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import androidx.lifecycle.lifecycleScope
 import io.legado.app.R
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
-import androidx.lifecycle.lifecycleScope
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
-import io.legado.app.exception.NoStackTraceException
 import io.legado.app.domain.model.readaloud.ReadAloudPlaybackCursor
 import io.legado.app.domain.model.readaloud.ReadAloudVoice
 import io.legado.app.domain.model.readaloud.SpeechEngineRoute
 import io.legado.app.domain.model.readaloud.SpeechVoiceRouter
 import io.legado.app.domain.model.readaloud.SystemTtsVoiceConfig
+import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.MediaHelp
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.lib.dialogs.SelectItem
@@ -189,7 +189,7 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
             } else {
                 // 无间隔模式：保持原有的队列式连续播放，确保无缝衔接
                 LogUtils.d(TAG, "朗读列表大小 ${contentList.size}")
-                LogUtils.d(TAG, "朗读页数 ${textChapter?.pageSize}")
+                LogUtils.d(TAG, "朗读页数 ${readerReadAloudChapter?.pageCount}")
                 val tts = textToSpeech ?: throw NoStackTraceException("tts is null")
                 val contentList = contentList
                 var isAddedText = false
@@ -345,15 +345,17 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
             LogUtils.d(TAG, "onStart nowSpeak:$nowSpeak pageIndex:$pageIndex utteranceId:$s")
             utteranceStartPos = paragraphStartPos
             utteranceStartReadAloudNumber = readAloudNumber
-            textChapter?.let {
+            readerReadAloudChapter?.let {
                 if (contentList[nowSpeak].matches(AppPattern.notReadAloudRegex)) {
                     nextParagraph(naturalCompletion = true)
                 }
-                if (pageIndex + 1 < it.pageSize
-                    && readAloudNumber + 1 > it.getReadLength(pageIndex + 1)
+                if (pageIndex + 1 < it.pageCount
+                    && readAloudNumber + 1 > it.pageStart(pageIndex + 1)
                 ) {
                     pageIndex++
-                    ReadBook.moveToNextPage()
+                    // This is the TTS engine advancing across a page boundary, not a user turn.
+                    // Mark it so ReadBook neither detaches the session nor restarts TTS at page two.
+                    withSpeechNavigation { ReadBook.moveToNextPage() }
                 }
                 upTtsProgress(readAloudNumber + 1)
                 upMediaMetadata(showContent = true)
@@ -423,6 +425,8 @@ class TTSReadAloudService : BaseReadAloudService(), KoinComponent {
                     return
                 }
             } while (contentList[nowSpeak].matches(AppPattern.notReadAloudRegex))
+            // 页内切段不引入换行符，累加会漂移，用段落绝对位置重算
+            paragraphChapterPositionAt(nowSpeak)?.let { readAloudNumber = it }
         }
 
         @Deprecated("Deprecated in Java")

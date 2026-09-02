@@ -63,7 +63,6 @@ import io.legado.app.help.source.SourceHelp
 import io.legado.app.help.storage.Backup
 import io.legado.app.lib.theme.primaryColor
 import io.legado.app.model.BookCover
-import io.legado.app.ui.book.read.page.entities.TextLine
 import io.legado.app.utils.ChineseUtils
 import io.legado.app.utils.FirebaseManager
 import io.legado.app.utils.LogUtils
@@ -235,11 +234,6 @@ class App : Application(), SingletonImageLoader.Factory {
                 AppWebDav.downloadAllBookProgress()
             }
         }
-    }
-
-    override fun onTrimMemory(level: Int) {
-        super.onTrimMemory(level)
-        TextLine.trimCaches(level)
     }
 
     /**

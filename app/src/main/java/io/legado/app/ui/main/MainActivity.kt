@@ -105,6 +105,9 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack,
         @Volatile
         var hasActiveAudioPlayRoute: Boolean = false
 
+        @Volatile
+        var hasActiveSourceLoginRoute: Boolean = false
+
         fun createLauncherIntent(context: Context): Intent =
             MainIntent.createLauncherIntent(context)
 
@@ -698,7 +701,7 @@ open class MainActivity : BaseComposeActivity(), AudioPlay.CallBack,
     }
 
     override fun upLyric(lyric: String?) {
-        // 歌词暂不在界面展示
+        activeAudioPlayViewModel?.onLyricChanged()
     }
 
     override fun upLyricP(position: Int) {

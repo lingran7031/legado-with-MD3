@@ -356,7 +356,7 @@ object Restore : KoinComponent {
             get<ReadStyleGateway>().refresh()
             // refresh 只重建 Compose 侧 state；阅读器开着时渲染层的两份快照（RenderStyle/
             // TipStyle）与已排版内容不会跟着刷新，得走配置总线让 controller 重建并重排。
-            // 阅读器没开时无人消费，重开由 ReadView.init 的重建入口兜底。
+            // 阅读器没开时无人消费，重开后由 Compose 阅读路由的分页重建入口兜底。
             ReadConfigUpdateBus.post(
                 setOf(
                     ConfigUpdateAction.UpdateBackground,

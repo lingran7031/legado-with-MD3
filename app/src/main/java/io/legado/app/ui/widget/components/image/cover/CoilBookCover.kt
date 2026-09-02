@@ -61,6 +61,7 @@ internal fun usesDefaultBookCover(path: String?): Boolean {
             path == DefaultCoverPath
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun BookCoverImage(
     name: String?,
@@ -76,6 +77,8 @@ fun BookCoverImage(
     onSuccess: (() -> Unit)? = null,
     onError: (() -> Unit)? = null,
     sharedCoverKey: String? = null,
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
     requestBuilder: ImageRequest.Builder.() -> Unit = {},
 ) {
     val context = LocalContext.current
@@ -123,7 +126,20 @@ fun BookCoverImage(
             isUsingDefaultCover ||
                 (showLoadingPlaceholder && showLoadingDefault)
         )
-    Box(modifier = modifier) {
+    Box(
+        modifier = modifier.then(
+            with(sharedTransitionScope) {
+                if (this != null && animatedVisibilityScope != null && sharedCoverKey != null) {
+                    Modifier.sharedBounds(
+                        sharedContentState = rememberSharedContentState(sharedCoverKey),
+                        animatedVisibilityScope = animatedVisibilityScope,
+                    )
+                } else {
+                    Modifier
+                }
+            }
+        )
+    ) {
         if (showCustomDefault) {
             AsyncImage(
                 model = buildCoverImageRequest(
@@ -249,7 +265,7 @@ fun CoilBookCover(
             .then(
                 with(sharedTransitionScope) {
                     if (this != null && animatedVisibilityScope != null && sharedCoverKey != null) {
-                        Modifier.sharedElement(
+                        Modifier.sharedBounds(
                             sharedContentState = rememberSharedContentState(sharedCoverKey),
                             animatedVisibilityScope = animatedVisibilityScope,
                             clipInOverlayDuringTransition = OverlayClip(shape)

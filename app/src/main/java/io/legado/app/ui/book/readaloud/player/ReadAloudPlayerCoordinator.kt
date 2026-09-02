@@ -8,6 +8,7 @@ import io.legado.app.data.repository.BookRepository
 import io.legado.app.domain.gateway.ReadAloudSettingsGateway
 import io.legado.app.domain.model.PlaybackTimer
 import io.legado.app.domain.model.readaloud.ReadAloudSessionStatus
+import io.legado.app.feature.reader.core.readaloud.ReaderReadAloudChapter
 import io.legado.app.model.ReadAloud
 import io.legado.app.model.ReadAloudSessionStore
 import io.legado.app.model.ReadBook
@@ -131,16 +132,24 @@ class ReadAloudPlayerCoordinator(
 
     private fun snapshotBook(): BookState {
         val book = ReadBook.book
-        val chapter = ReadBook.curTextChapter
+        val input = ReadBook.readerChapterInputWindow.current
+        val chapter = input?.let {
+            ReaderReadAloudChapter.create(
+                chapterIndex = it.chapter.index,
+                title = it.displayTitle,
+                semanticContent = it.source.semanticContent,
+                pageStarts = ReadBook.readerPagination(it.chapter.index)?.pageStarts.orEmpty(),
+            )
+        }
         return BookState(
             bookUrl = book?.bookUrl.orEmpty(),
             bookName = book?.name.orEmpty(),
             author = book?.author.orEmpty(),
             coverPath = book?.getDisplayCover(),
             sourceOrigin = book?.origin,
-            chapterIndex = chapter?.position ?: -1,
+            chapterIndex = chapter?.chapterIndex ?: -1,
             chapterTitle = chapter?.title.orEmpty(),
-            chapterText = chapter?.getContent().orEmpty(),
+            chapterText = input?.source?.semanticContent.orEmpty(),
             textLines = chapter?.paragraphs.orEmpty().mapNotNull { paragraph ->
                 paragraph.text.replace(Regex("[袮祢꧁]"), " ").trim()
                     .takeIf(String::isNotEmpty)?.let {
@@ -180,12 +189,8 @@ class ReadAloudPlayerCoordinator(
     }
 
     fun seekTo(chapterPosition: Int, chapterLength: Int) {
-        val chapter = ReadBook.curTextChapter ?: return
         val position = chapterPosition.coerceIn(0, chapterLength)
-        val pageIndex = chapter.getPageIndexByCharIndex(position)
-        if (pageIndex < 0) return
-        val startPos = position - chapter.getReadLength(pageIndex)
-        ReadAloud.play(application, play = true, pageIndex = pageIndex, startPos = startPos)
+        ReadAloud.play(application, play = true, chapterPosition = position)
     }
 
     private companion object {

@@ -441,13 +441,10 @@ class ReadAloudDelegate(
         scope.launch {
             val shouldRestart = BaseReadAloudService.isRun
             val resumePlaying = shouldRestart && !BaseReadAloudService.pause
-            val chapter = ReadBook.curTextChapter
             val chapterPosition = readAloudSessionStore.state.value.playback.chapterPosition
             readAloudSettingsRepository.update { it.copy(useMultiSpeaker = value) }
             host.updateState { it.copy(useMultiSpeaker = value) }
-            if (shouldRestart && chapter != null) {
-                val pageIndex = chapter.getPageIndexByCharIndex(chapterPosition)
-                val startPos = chapterPosition - chapter.getReadLength(pageIndex)
+            if (shouldRestart && ReadBook.readerChapterInputWindow.current != null) {
                 ReadAloud.stop(context)
                 val stopped = withTimeoutOrNull(2_000) {
                     readAloudSessionStore.state.first {
@@ -459,8 +456,7 @@ class ReadAloudDelegate(
                 ReadAloud.play(
                     context = context,
                     play = resumePlaying,
-                    pageIndex = pageIndex,
-                    startPos = startPos.coerceAtLeast(0),
+                    chapterPosition = chapterPosition.coerceAtLeast(0),
                 )
             }
         }

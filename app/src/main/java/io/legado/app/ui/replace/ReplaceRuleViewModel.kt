@@ -416,9 +416,9 @@ class ReplaceRuleViewModel(
 
     private fun initBookData(bookUrl: String) {
         val book = ReadBook.book
-        val textChapter = ReadBook.curTextChapter
+        val chapterInput = ReadBook.readerChapterInputWindow.current
         if (book != null && book.bookUrl == bookUrl) {
-            val effectiveRules = textChapter?.effectiveReplaceRules.orEmpty().toImmutableList()
+            val effectiveRules = chapterInput?.content?.effectiveReplaceRules.orEmpty().toImmutableList()
             val replaceEnabled = book.getUseReplaceRule(AppConfig.replaceEnableDefault)
             val chineseConvertActive = readSettingsRepository.currentSettings.chineseConverterType > 0
             val reSegmentActive = book.getReSegment()

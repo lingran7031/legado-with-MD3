@@ -128,6 +128,7 @@ class ConfigUpdateActionsInvariantTest {
             "MouseWheelPage",
             "VolumeKeyPage",
             "VolumeKeyPageOnPlay",
+            "ReadAloudDetachReminderEnabled",
             "KeyPageOnLongPress",
             "SwipeToAddBookmark",
             "BookmarkBadgeSize",

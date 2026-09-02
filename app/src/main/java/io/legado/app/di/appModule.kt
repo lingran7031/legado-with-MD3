@@ -252,6 +252,7 @@ import io.legado.app.ui.book.knowledge.BookKnowledgeListViewModel
 import io.legado.app.ui.book.manage.BookshelfManageScreenViewModel
 import io.legado.app.ui.book.manga.MangaReaderViewModel
 import io.legado.app.ui.book.read.ReadBookViewModel
+import io.legado.app.ui.book.read.ReaderSessionViewModel
 import io.legado.app.ui.book.readRecord.ReadRecordOverviewViewModel
 import io.legado.app.ui.book.readRecord.ReadRecordViewModel
 import io.legado.app.ui.book.readaloud.cache.TtsCacheViewModel
@@ -289,6 +290,7 @@ import io.legado.app.ui.config.translation.TranslationConfigViewModel
 import io.legado.app.ui.dict.DictViewModel
 import io.legado.app.ui.dict.rule.DictRuleViewModel
 import io.legado.app.ui.highlightTagRule.HighlightTagRuleViewModel
+import io.legado.app.feature.onboarding.OnboardingViewModel
 import io.legado.app.ui.login.SourceLoginViewModel
 import io.legado.app.ui.main.MainRouteSearchContent
 import io.legado.app.ui.main.MainViewModel
@@ -588,6 +590,7 @@ val appModule = module {
     viewModelOf(::DownloadCacheConfigViewModel)
     viewModelOf(::ThemeConfigViewModel)
     viewModelOf(::ThemeManageViewModel)
+    viewModelOf(::OnboardingViewModel)
     viewModelOf(::BackupConfigViewModel)
     viewModelOf(::LabConfigViewModel)
     viewModelOf(::TranslationConfigViewModel)
@@ -708,6 +711,7 @@ val appModule = module {
         )
     }
     viewModelOf(::MangaReaderViewModel)
+    viewModelOf(::ReaderSessionViewModel)
     viewModel {
         ReadBookViewModel(
             application = get(),

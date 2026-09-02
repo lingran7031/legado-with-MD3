@@ -486,7 +486,7 @@ class ReadStyleDelegate(
     }
 
     private fun emitConfigUpdate(vararg actions: ConfigUpdateAction) {
-        host.emitEffect(ReadBookEffect.UpdateReadViewConfig(actions.toSet()))
+        host.emitEffect(ReadBookEffect.UpdateReaderConfig(actions.toSet()))
     }
 
     private companion object {

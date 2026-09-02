@@ -188,10 +188,10 @@ class MarkingDelegate(
      * 位置来自当前已排版章节；若选区位置和合成正文略有偏差，则在附近窗口寻找选中文本。
      */
     private fun selectionContext(selection: Bookmark): Pair<String, String> {
-        val chapter = ReadBook.curTextChapter
+        val chapter = ReadBook.readerChapterInputWindow.current
             ?.takeIf { it.chapter.index == selection.chapterIndex }
             ?: return "" to ""
-        val content = chapter.getContent()
+        val content = chapter.source.semanticContent
         val expectedStart = selection.chapterPos.coerceIn(0, content.length)
         val windowStart = max(0, expectedStart - CONTEXT_SEARCH_WINDOW)
         val nearStart = content.indexOf(selection.bookText, windowStart)

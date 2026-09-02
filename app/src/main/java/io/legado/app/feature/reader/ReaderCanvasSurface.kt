@@ -1,0 +1,1773 @@
+package io.legado.app.feature.reader
+
+import android.graphics.Paint
+import io.legado.app.feature.reader.platform.ReaderBookmarkBadgeRenderer
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
+import android.graphics.Shader
+import android.os.SystemClock
+import android.graphics.drawable.Drawable
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.rememberSplineBasedDecay
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.Matrix
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.ScrollAxisRange
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.scrollBy
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.semantics.verticalScrollAxisRange
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import io.legado.app.feature.reader.core.gesture.PullBookmarkDefaults
+import io.legado.app.feature.reader.core.gesture.PullBookmarkGesture
+import io.legado.app.feature.reader.core.gesture.ReaderMainAxisPolicy
+import io.legado.app.feature.reader.core.gesture.ReaderTapAction
+import io.legado.app.feature.reader.core.gesture.ReaderTapActionGrid
+import io.legado.app.feature.reader.core.gesture.ReaderGestureSettingsPolicy
+import io.legado.app.feature.reader.core.accessibility.ReaderAccessibilityPolicy
+import io.legado.app.feature.reader.core.model.*
+import io.legado.app.feature.reader.core.transition.*
+import io.legado.app.feature.reader.core.selection.ReaderSelection
+import io.legado.app.feature.reader.core.selection.ReaderSelectionEndpoint
+import io.legado.app.feature.reader.core.selection.ReaderPageChangeOrigin
+import io.legado.app.feature.reader.core.selection.ReaderSelectionLifecyclePolicy
+import io.legado.app.feature.reader.core.selection.ReaderSelectionMenuAnchor
+import io.legado.app.feature.reader.core.selection.ReaderSelectionPolicy
+import io.legado.app.feature.reader.core.selection.mergeSelectionBounds
+import io.legado.app.feature.reader.core.gesture.ReaderPageViewportLayout
+import io.legado.app.feature.reader.platform.ReaderAndroidPaintFactory
+import io.legado.app.feature.reader.platform.ReaderPageDecorationDrawCache
+import io.legado.app.feature.reader.platform.ReaderTextBackgroundLoader
+import io.legado.app.feature.reader.core.model.emphasisUnderlineRuns
+import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.PI
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import io.legado.app.R
+
+/** Compose Canvas reader surface. Gesture arbitration and transforms are independent of ReadView. */
+// 把手圆挂在行底部下方、顶端圆周与竖线末端相切；圆区域在拖动命中时视作竖线的延伸。
+private val SelectionHandleRadius = 7.dp
+private val SelectionHandleStrokeWidth = 2.dp
+
+@Composable
+fun ReaderCanvasSurface(
+    pages: ReaderPageWindow,
+    transitionMode: ReaderTransitionMode,
+    backgroundColor: Color,
+    backgroundImage: Drawable?,
+    backgroundRevision: Long,
+    backgroundImageAlpha: Float,
+    selectionColor: Color,
+    textAccentColor: Color,
+    autoPageIndicatorColor: Color,
+    modifier: Modifier = Modifier,
+    onPreviousPage: () -> Unit,
+    onNextPage: () -> Unit,
+    onToggleMenu: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    swipeToBookmarkEnabled: Boolean,
+    hasBookmarkOnCurrentPage: () -> Boolean,
+    cachedImage: (ReaderElement.Image) -> Bitmap?,
+    loadImage: suspend (ReaderElement.Image) -> Bitmap?,
+    autoPageActive: Boolean,
+    autoPagePaused: Boolean,
+    autoReadSpeedSeconds: Int,
+    isEInkMode: Boolean,
+    onAutoPageStop: () -> Unit,
+    onShowSelectionMenu: (ReaderSelection, String, ReaderSelectionMenuAnchor) -> Unit,
+    onDismissSelectionMenu: () -> Unit,
+    onElementClick: (ReaderElement) -> Boolean,
+    onElementLongPress: (ReaderElement, Float, Float) -> Boolean,
+    selectionEnabled: Boolean,
+    selectionHapticsEnabled: Boolean,
+    tapActionGrid: ReaderTapActionGrid,
+    onTapAction: (ReaderTapAction) -> Unit,
+    onReaderInteraction: () -> Unit,
+    configuredTouchSlopPx: Int,
+    noAnimationScrollPage: Boolean,
+    externalPageTurns: Flow<ReaderTurnDirection>,
+    externalSelectionCancels: Flow<Unit>,
+) {
+    val current = pages.current ?: return
+    val pageBackgroundImage = remember(backgroundImage, backgroundRevision) {
+        backgroundImage?.isolatedCopy()
+    }
+    val animationScope = rememberCoroutineScope()
+    val hapticFeedback = LocalHapticFeedback.current
+    val scrollDecay = rememberSplineBasedDecay<Float>()
+    var displayOffset by remember { mutableFloatStateOf(0f) }
+    var transition by remember { mutableStateOf(ReaderPageTransition()) }
+    var pageMotionJob by remember { mutableStateOf<Job?>(null) }
+    var pendingTurn by remember { mutableStateOf<ReaderTurnDirection?>(null) }
+    var pendingTurnOrigin by remember { mutableStateOf<ReaderPageId?>(null) }
+    val latestPreviousPage by rememberUpdatedState(onPreviousPage)
+    val latestNextPage by rememberUpdatedState(onNextPage)
+    val latestAutoPageStop by rememberUpdatedState(onAutoPageStop)
+    val latestAutoPagePaused by rememberUpdatedState(autoPagePaused)
+    val latestAutoPageActive by rememberUpdatedState(autoPageActive)
+    val latestShowSelectionMenu by rememberUpdatedState(onShowSelectionMenu)
+    val latestDismissSelectionMenu by rememberUpdatedState(onDismissSelectionMenu)
+    val latestSelectionHapticsEnabled by rememberUpdatedState(selectionHapticsEnabled)
+    val latestSelectionEnabled by rememberUpdatedState(selectionEnabled)
+    val latestTapActionGrid by rememberUpdatedState(tapActionGrid)
+    val latestTapAction by rememberUpdatedState(onTapAction)
+    val latestReaderInteraction by rememberUpdatedState(onReaderInteraction)
+    val latestNoAnimationScrollPage by rememberUpdatedState(noAnimationScrollPage)
+    var bookmarkOffset by remember { mutableFloatStateOf(0f) }
+    var bookmarkArmed by remember { mutableStateOf(false) }
+    var bookmarkWillRemove by remember { mutableStateOf(false) }
+    var bookmarkReturnJob by remember { mutableStateOf<Job?>(null) }
+    val latestSwipeToBookmarkEnabled by rememberUpdatedState(swipeToBookmarkEnabled)
+    val latestHasBookmark by rememberUpdatedState(hasBookmarkOnCurrentPage)
+    val latestToggleBookmark by rememberUpdatedState(onToggleBookmark)
+    DisposableEffect(transitionMode, current.widthPx, current.heightPx, current.layoutRevision) {
+        onDispose {
+            pageMotionJob?.cancel()
+            pendingTurn = null
+            pendingTurnOrigin = null
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+            bookmarkReturnJob?.cancel()
+            bookmarkOffset = 0f
+            bookmarkArmed = false
+        }
+    }
+    var curlTouchY by remember { mutableFloatStateOf(1f) }
+    var curlTouchX by remember { mutableFloatStateOf(0f) }
+    var curlCornerY by remember { mutableFloatStateOf(0f) }
+    var scrollOffset by remember { mutableFloatStateOf(0f) }
+    var scrollCarryTarget by remember { mutableStateOf<ReaderPageId?>(null) }
+    var autoRevealPx by remember { mutableFloatStateOf(0f) }
+    var autoPageRemainingMillis by remember(current.id, autoReadSpeedSeconds) {
+        mutableLongStateOf(ReaderAutoPagePolicy.pageDurationMillis(autoReadSpeedSeconds))
+    }
+    var textSelection by remember { mutableStateOf<ReaderSelection?>(null) }
+    val latestSelectionPausesAutoPage by rememberUpdatedState(textSelection != null)
+    var selectionMenuVisible by remember { mutableStateOf(false) }
+    var selectionLayoutRevision by remember { mutableLongStateOf(current.layoutRevision) }
+    val latestPages by rememberUpdatedState(pages)
+    LaunchedEffect(
+        pages.previous?.id,
+        pages.previous?.revision,
+        pages.current.id,
+        pages.current.revision,
+        pages.next?.id,
+        pages.next?.revision,
+    ) {
+        // Paged modes do not compose the adjacent page until a gesture starts. Warm its images
+        // while the window is idle so the first animation frame never falls back to placeholders.
+        listOfNotNull(pages.next, pages.previous, pages.current)
+            .asSequence()
+            .flatMap { page -> page.elements.asSequence().filterIsInstance<ReaderElement.Image>() }
+            .distinctBy { element -> element.source to element.bounds }
+            .forEach { element -> launch { loadImage(element) } }
+    }
+    val transforms = transition.copy(offsetPx = displayOffset).transforms(transitionMode)
+    fun pageViewportLayout(window: ReaderPageWindow = latestPages): ReaderPageViewportLayout =
+        if (transitionMode == ReaderTransitionMode.SCROLL) {
+            ReaderPageViewportLayout.scroll(window, scrollOffset)
+        } else {
+            ReaderPageViewportLayout.paged(window)
+        }
+    fun dismissSelectionMenu() {
+        selectionMenuVisible = false
+        latestDismissSelectionMenu()
+    }
+    fun showSelectionMenu(selection: ReaderSelection, window: ReaderPageWindow): Boolean {
+        val bounds = pageViewportLayout(window).selectionBounds(selection).map { it.bounds }
+        val text = selection.selectedText(listOfNotNull(window.previous, window.current, window.next))
+        val anchor = ReaderSelectionMenuAnchor.from(bounds) ?: return false
+        if (text.isEmpty()) return false
+        selectionMenuVisible = true
+        latestShowSelectionMenu(selection, text, anchor)
+        return true
+    }
+    fun clearSelectionForPageChange(origin: ReaderPageChangeOrigin) {
+        if (textSelection != null && ReaderSelectionLifecyclePolicy.shouldClearForPageChange(origin)) {
+            textSelection = null
+            dismissSelectionMenu()
+        }
+    }
+    fun completePendingTurn() {
+        val direction = pendingTurn.takeIf { pendingTurnOrigin == latestPages.current?.id }
+        pendingTurn = null
+        pendingTurnOrigin = null
+        when (direction) {
+            ReaderTurnDirection.PREVIOUS -> latestPreviousPage()
+            ReaderTurnDirection.NEXT -> latestNextPage()
+            null -> Unit
+        }
+    }
+    fun settlePageTurn(decision: ReaderTransitionDecision) {
+        pageMotionJob?.cancel()
+        pendingTurn = transition.direction.takeIf { decision.commit }
+        pendingTurnOrigin = latestPages.current?.id
+        if (transitionMode == ReaderTransitionMode.NONE) {
+            completePendingTurn()
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+            return
+        }
+        val targetCurlX = transition.direction?.let {
+            ReaderCurlTouchPolicy.settledX(it, decision.commit, transition.pageExtentPx)
+        } ?: curlTouchX
+        val durationMillis = if (transitionMode == ReaderTransitionMode.SIMULATION) {
+            ReaderCurlTouchPolicy.settleDurationMillis(
+                curlTouchX,
+                targetCurlX,
+                transition.pageExtentPx,
+            )
+        } else {
+            ReaderPageTransitionPolicy.settleDurationMillis(
+                transitionMode, displayOffset, decision.targetOffsetPx, transition.pageExtentPx,
+            )
+        }
+        if (durationMillis == 0) {
+            displayOffset = decision.targetOffsetPx
+            completePendingTurn()
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+            return
+        }
+        val startOffset = displayOffset
+        val startCurlX = curlTouchX
+        val startCurlY = curlTouchY
+        val targetCurlY = ReaderCurlTouchPolicy.settledY(
+            curlCornerY,
+            latestPages.current?.heightPx?.toFloat() ?: 0f,
+        )
+        pageMotionJob = animationScope.launch {
+            Animatable(startOffset).animateTo(
+                decision.targetOffsetPx,
+                tween(durationMillis),
+            ) {
+                displayOffset = value
+                if (transitionMode == ReaderTransitionMode.SIMULATION) {
+                    val distance = decision.targetOffsetPx - startOffset
+                    val fraction = if (distance == 0f) 1f else ((value - startOffset) / distance).coerceIn(0f, 1f)
+                    curlTouchX = startCurlX + (targetCurlX - startCurlX) * fraction
+                    curlTouchY = startCurlY + (targetCurlY - startCurlY) * fraction
+                }
+            }
+            completePendingTurn()
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+        }
+    }
+    fun tapPageTurn(direction: ReaderTurnDirection) {
+        val window = latestPages
+        if ((if (direction == ReaderTurnDirection.PREVIOUS) window.previous else window.next) == null) return
+        val width = window.current?.widthPx?.toFloat() ?: return
+        if (transitionMode == ReaderTransitionMode.SIMULATION) {
+            curlTouchX = ReaderCurlTouchPolicy.programmaticX(direction, width)
+            curlTouchY = ReaderCurlTouchPolicy.programmaticY(
+                direction, curlTouchY, window.current.heightPx.toFloat(),
+            )
+            curlCornerY = ReaderCurlTouchPolicy.cornerY(
+                direction, curlTouchY, window.current.heightPx.toFloat(),
+            )
+        }
+        val target = if (direction == ReaderTurnDirection.PREVIOUS) width else -width
+        transition = ReaderPageTransition(direction, 0f, width, dragging = true)
+        displayOffset = 0f
+        settlePageTurn(ReaderTransitionDecision(target, commit = true))
+    }
+    fun applyScrollResult(result: ReaderScrollResult, window: ReaderPageWindow) {
+        if (!ReaderScrollPolicy.canApplyDelta(scrollCarryTarget)) return
+        scrollOffset = result.offsetPx
+        when (result.crossing) {
+            ReaderScrollCrossing.PREVIOUS -> {
+                scrollCarryTarget = window.previous?.id
+                latestPreviousPage()
+            }
+            ReaderScrollCrossing.NEXT -> {
+                scrollCarryTarget = window.next?.id
+                latestNextPage()
+            }
+            null -> Unit
+        }
+    }
+    fun tapScrollPage(direction: ReaderTurnDirection) {
+        val page = latestPages.current ?: return
+        val distance = ReaderScrollPolicy.pageStep(page, scrollOffset, direction)
+        pageMotionJob?.cancel()
+        val steps = ReaderGestureSettingsPolicy.scrollPageAnimationSteps(latestNoAnimationScrollPage)
+        if (steps == 1) {
+            val window = latestPages
+            val currentPage = window.current ?: return
+            applyScrollResult(
+                ReaderScrollPolicy.apply(
+                    scrollOffset,
+                    distance,
+                    window.previous?.scrollExtentPx ?: 0f,
+                    currentPage.scrollExtentPx,
+                    currentPage.scrollViewportExtentPx(),
+                    window.previous != null,
+                    window.next != null,
+                ),
+                window,
+            )
+            return
+        }
+        pageMotionJob = animationScope.launch {
+            repeat(steps) {
+                val window = latestPages
+                val currentPage = window.current ?: return@launch
+                val result = ReaderScrollPolicy.apply(
+                    scrollOffset,
+                    distance / steps,
+                    window.previous?.scrollExtentPx ?: 0f,
+                    currentPage.scrollExtentPx,
+                    currentPage.scrollViewportExtentPx(),
+                    window.previous != null,
+                    window.next != null,
+                )
+                applyScrollResult(result, window)
+                if (result.hitBoundary) return@launch
+                delay(16)
+            }
+        }
+    }
+    fun dispatchTapAction(action: ReaderTapAction) {
+        when (action) {
+            ReaderTapAction.MENU -> onToggleMenu()
+            ReaderTapAction.NEXT_PAGE -> if (transitionMode == ReaderTransitionMode.SCROLL) {
+                tapScrollPage(ReaderTurnDirection.NEXT)
+            } else tapPageTurn(ReaderTurnDirection.NEXT)
+            ReaderTapAction.PREVIOUS_PAGE -> if (transitionMode == ReaderTransitionMode.SCROLL) {
+                tapScrollPage(ReaderTurnDirection.PREVIOUS)
+            } else tapPageTurn(ReaderTurnDirection.PREVIOUS)
+            else -> latestTapAction(action)
+        }
+    }
+    fun accessibilityPageTurn(direction: ReaderTurnDirection) {
+        if (!ReaderProgrammaticTurnPolicy.shouldAccept(pageMotionJob?.isActive == true)) return
+        clearSelectionForPageChange(ReaderPageChangeOrigin.PROGRAMMATIC)
+        dispatchTapAction(
+            if (direction == ReaderTurnDirection.PREVIOUS) {
+                ReaderTapAction.PREVIOUS_PAGE
+            } else {
+                ReaderTapAction.NEXT_PAGE
+            }
+        )
+    }
+    fun showComposeAccessibilityMenu() {
+        dispatchTapAction(ReaderTapAction.MENU)
+    }
+    LaunchedEffect(externalPageTurns) {
+        externalPageTurns.collect { direction ->
+            if (!ReaderProgrammaticTurnPolicy.shouldAccept(pageMotionJob?.isActive == true)) {
+                return@collect
+            }
+            clearSelectionForPageChange(ReaderPageChangeOrigin.PROGRAMMATIC)
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+            dispatchTapAction(
+                if (direction == ReaderTurnDirection.PREVIOUS) {
+                    ReaderTapAction.PREVIOUS_PAGE
+                } else {
+                    ReaderTapAction.NEXT_PAGE
+                }
+            )
+        }
+    }
+    LaunchedEffect(externalSelectionCancels) {
+        externalSelectionCancels.collect {
+            textSelection = null
+            selectionMenuVisible = false
+        }
+    }
+    LaunchedEffect(current.id, current.layoutRevision, transitionMode) {
+        if (transitionMode == ReaderTransitionMode.SCROLL) {
+            scrollOffset = ReaderScrollPolicy.offsetAfterPageChange(
+                scrollOffset, scrollCarryTarget, current.id,
+            )
+        } else scrollOffset = 0f
+        scrollCarryTarget = null
+        if (pendingTurnOrigin != null && pendingTurnOrigin != current.id) {
+            pageMotionJob?.cancel()
+            pendingTurn = null
+            pendingTurnOrigin = null
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+        }
+    }
+    LaunchedEffect(current.layoutRevision) {
+        val previousRevision = selectionLayoutRevision
+        selectionLayoutRevision = current.layoutRevision
+        val selection = textSelection
+        if (ReaderSelectionLifecyclePolicy.shouldReanchorMenuAfterLayoutChange(
+                hasSelection = selection != null,
+                menuVisible = selectionMenuVisible,
+                previousLayoutRevision = previousRevision,
+                currentLayoutRevision = current.layoutRevision,
+            ) && selection != null && !showSelectionMenu(selection, latestPages)
+        ) {
+            textSelection = null
+            dismissSelectionMenu()
+        }
+    }
+    LaunchedEffect(
+        autoPageActive,
+        autoPagePaused,
+        autoReadSpeedSeconds,
+        transitionMode,
+        isEInkMode,
+        current.id,
+        textSelection,
+    ) {
+        if (!autoPageActive) {
+            autoRevealPx = 0f
+            autoPageRemainingMillis = ReaderAutoPagePolicy.pageDurationMillis(autoReadSpeedSeconds)
+            return@LaunchedEffect
+        }
+        if (ReaderSelectionLifecyclePolicy.shouldPauseAutoPage(textSelection != null)) {
+            return@LaunchedEffect
+        }
+        if (autoPagePaused) return@LaunchedEffect
+        if (ReaderAutoPagePolicy.visualMode(isEInkMode) == ReaderAutoPageVisualMode.DISCRETE) {
+            autoRevealPx = 0f
+            val plannedMillis = autoPageRemainingMillis
+            val startedAt = SystemClock.uptimeMillis()
+            try {
+                delay(plannedMillis)
+                autoPageRemainingMillis = ReaderAutoPagePolicy.pageDurationMillis(autoReadSpeedSeconds)
+                if (latestPages.next == null) latestAutoPageStop() else latestNextPage()
+            } finally {
+                if (ReaderAutoPagePolicy.shouldPreserveRemainingTime(
+                        menuPaused = latestAutoPagePaused,
+                        selectionPaused = latestSelectionPausesAutoPage,
+                    )
+                ) {
+                    autoPageRemainingMillis = ReaderAutoPagePolicy.remainingAfterPause(
+                        plannedMillis,
+                        SystemClock.uptimeMillis() - startedAt,
+                    )
+                }
+            }
+            return@LaunchedEffect
+        }
+        var previousFrame = withFrameNanos { it }
+        while (true) {
+            val frame = withFrameNanos { it }
+            val elapsedMs = (frame - previousFrame) / 1_000_000f
+            previousFrame = frame
+            if (transitionMode == ReaderTransitionMode.SCROLL) {
+                val window = latestPages
+                val page = window.current ?: continue
+                val viewport = page.scrollViewportExtentPx()
+                val delta = viewport /
+                    ReaderAutoPagePolicy.pageDurationMillis(autoReadSpeedSeconds).toFloat() * elapsedMs
+                val result = ReaderScrollPolicy.apply(scrollOffset, -delta, window.previous?.scrollExtentPx ?: 0f, page.scrollExtentPx, page.scrollViewportExtentPx(), window.previous != null, window.next != null)
+                applyScrollResult(result, window)
+                if (result.hitBoundary) { latestAutoPageStop(); break }
+            } else {
+                val viewport = current.heightPx.toFloat().coerceAtLeast(1f)
+                val delta = viewport /
+                    ReaderAutoPagePolicy.pageDurationMillis(autoReadSpeedSeconds).toFloat() * elapsedMs
+                autoRevealPx += delta
+                if (autoRevealPx >= viewport) {
+                    if (latestPages.next == null) {
+                        latestAutoPageStop()
+                        break
+                    }
+                    latestNextPage()
+                    autoRevealPx = 0f
+                }
+            }
+        }
+    }
+    val bookmarkDescription = stringResource(io.legado.app.R.string.a11y_page_bookmarked)
+    val previousPageDescription = stringResource(io.legado.app.R.string.prev_page)
+    val nextPageDescription = stringResource(io.legado.app.R.string.next_page)
+    val menuDescription = stringResource(io.legado.app.R.string.menu)
+    val accessibilityPage = ReaderAccessibilityPolicy.snapshot(pages)
+    Box(modifier.clearAndSetSemantics {
+        accessibilityPage?.let { page ->
+            text = AnnotatedString(page.text)
+            if (page.isBookmarked) stateDescription = bookmarkDescription
+            verticalScrollAxisRange = ScrollAxisRange(
+                value = { if (page.canGoPrevious) 1f else 0f },
+                maxValue = {
+                    (if (page.canGoPrevious) 1f else 0f) +
+                        (if (page.canGoNext) 1f else 0f)
+                },
+            )
+            onClick(label = menuDescription) {
+                showComposeAccessibilityMenu()
+                true
+            }
+            scrollBy { x, y ->
+                val amount = if (abs(y) >= abs(x)) y else x
+                when {
+                    amount > 0f && page.canGoNext -> {
+                        accessibilityPageTurn(ReaderTurnDirection.NEXT)
+                        true
+                    }
+                    amount < 0f && page.canGoPrevious -> {
+                        accessibilityPageTurn(ReaderTurnDirection.PREVIOUS)
+                        true
+                    }
+                    else -> false
+                }
+            }
+            customActions = buildList {
+                if (page.canGoPrevious) add(CustomAccessibilityAction(previousPageDescription) {
+                    accessibilityPageTurn(ReaderTurnDirection.PREVIOUS)
+                    true
+                })
+                if (page.canGoNext) add(CustomAccessibilityAction(nextPageDescription) {
+                    accessibilityPageTurn(ReaderTurnDirection.NEXT)
+                    true
+                })
+            }
+        }
+    }.clipToBounds().background(backgroundColor).pointerInput(transitionMode, current.widthPx, current.heightPx, configuredTouchSlopPx) {
+        val pageTouchSlop = ReaderGestureSettingsPolicy.touchSlopPx(
+            viewConfiguration.touchSlop,
+            configuredTouchSlopPx,
+        )
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            latestReaderInteraction()
+            pageMotionJob?.cancel()
+            completePendingTurn()
+            displayOffset = 0f
+            transition = ReaderPageTransition()
+            bookmarkReturnJob?.cancel()
+            bookmarkOffset = 0f
+            bookmarkArmed = false
+            bookmarkWillRemove = latestHasBookmark()
+            val bookmarkEnabled = latestSwipeToBookmarkEnabled && textSelection == null
+            curlTouchY = down.position.y
+            val velocityTracker = VelocityTracker().also { it.addPosition(down.uptimeMillis, down.position) }
+            var total = Offset.Zero
+            var lastHorizontalDelta = 0f
+            var horizontalTurn = false
+            var horizontalDrag: ReaderHorizontalDrag? = null
+            var horizontalCapturedY = down.position.y
+            var bookmarkDrag = false
+            var bookmarkReleased = false
+            var scrollDrag = false
+            var movedPastSlop = false
+            var longPressed = false
+            var grabbingStart = false
+            var grabbingEnd = false
+            var grabbedEndpoint: ReaderSelectionEndpoint? = null
+            var suppressTap = false
+            var pointerPosition = down.position
+            val downSelectionLayout = pageViewportLayout()
+            val downPlacement = downSelectionLayout.pageAt(down.position.x, down.position.y)
+            val downPage = downPlacement?.page ?: latestPages.current
+            val downPageY = downPlacement?.localY(down.position.y) ?: down.position.y
+            textSelection?.let { selection ->
+                val bounds = downSelectionLayout.selectionBounds(selection).map { it.bounds }
+                val handleRadius = 28f * density
+                val start = bounds.firstOrNull()
+                val end = bounds.lastOrNull()
+                grabbingStart = start != null && Offset(start.left, start.bottom).minus(down.position).getDistance() <= handleRadius
+                grabbingEnd = end != null && Offset(end.right, end.bottom).minus(down.position).getDistance() <= handleRadius
+                grabbedEndpoint = when {
+                    grabbingStart -> selection.visualStartEndpoint()
+                    grabbingEnd -> selection.visualEndEndpoint()
+                    else -> null
+                }
+                if (!grabbingStart && !grabbingEnd) {
+                    textSelection = null
+                    dismissSelectionMenu()
+                    suppressTap = true
+                } else dismissSelectionMenu()
+            }
+            val longPressJob = animationScope.launch {
+                delay(viewConfiguration.longPressTimeoutMillis)
+                if (!movedPastSlop && !grabbingStart && !grabbingEnd) {
+                    downPage?.let { page ->
+                        val element = page.elementAt(down.position.x, downPageY)
+                        if (element != null && onElementLongPress(element, down.position.x, down.position.y)) {
+                            longPressed = true
+                        } else if (latestSelectionEnabled && !latestAutoPageActive) {
+                            ReaderSelectionPolicy.startWord(page, down.position.x, downPageY)?.let {
+                                textSelection = it
+                                if (latestSelectionHapticsEnabled) {
+                                    hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                                longPressed = true
+                            }
+                        }
+                    }
+                }
+            }
+            var released = false
+            try {
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Main)
+                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                    if (change.isConsumed) break
+                    pointerPosition = change.position
+                    if (!change.pressed) { released = true; break }
+                    total += change.positionChange()
+                    if (change.positionChange().x != 0f) lastHorizontalDelta = change.positionChange().x
+                    curlTouchY = change.position.y
+                    velocityTracker.addPosition(change.uptimeMillis, change.position)
+                    if (total.getDistance() >= pageTouchSlop) {
+                        movedPastSlop = true
+                        if (!longPressed && !grabbingStart && !grabbingEnd) longPressJob.cancel()
+                    }
+                    if (longPressed || grabbingStart || grabbingEnd) {
+                        val selection = textSelection
+                        val placement = pageViewportLayout().pageAt(change.position.x, change.position.y)
+                        if (placement != null && selection != null) {
+                            val page = placement.page
+                            // 圆把手视作竖线的延伸：手指落在把手圆区域内时按本行底边命中，
+                            // 避免圆与下一行之间的间隙把手柄拖动吸到下一行。
+                            var viewportY = change.position.y
+                            if (grabbedEndpoint != null) {
+                                val endpointBounds = pageViewportLayout().selectionBounds(selection).map { it.bounds }
+                                val anchorBound = if (grabbingStart) endpointBounds.firstOrNull() else endpointBounds.lastOrNull()
+                                if (anchorBound != null) {
+                                    val zoneBottom = anchorBound.bottom + 2 * SelectionHandleRadius.toPx()
+                                    if (viewportY > anchorBound.bottom && viewportY <= zoneBottom) {
+                                        viewportY = anchorBound.bottom
+                                    }
+                                }
+                            }
+                            val pageY = placement.localY(viewportY)
+                            val hit = ReaderSelectionPolicy.start(page, change.position.x, pageY)
+                                ?: if (grabbedEndpoint != null) {
+                                    ReaderSelectionPolicy.snapToText(page, change.position.x, pageY)?.let {
+                                        ReaderSelection(page.id.chapterIndex, it.chapterPosition, it.chapterPosition, it.emphasized)
+                                    }
+                                } else {
+                                    null
+                                }
+                            if (hit != null && hit.chapterIndex == selection.chapterIndex) {
+                                val updatedSelection = when {
+                                    grabbedEndpoint != null -> selection.moveEndpoint(
+                                        grabbedEndpoint,
+                                        hit.anchor,
+                                        hit.anchorIsTitle,
+                                    )
+                                    else -> ReaderSelectionPolicy.extend(selection, page, change.position.x, pageY)
+                                }
+                                if (updatedSelection != selection) {
+                                    textSelection = updatedSelection
+                                    if (latestSelectionHapticsEnabled) {
+                                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    }
+                                }
+                            }
+                            change.consume()
+                        }
+                        continue
+                    }
+                    if (!horizontalTurn && !bookmarkDrag && !scrollDrag && total.getDistance() >= pageTouchSlop) {
+                        val pull = pullBookmark(total, size.height.toFloat(), density, transitionMode, bookmarkEnabled)
+                        if (!bookmarkReleased) {
+                            val claim = PullBookmarkGesture.claim(bookmarkReleased, pull)
+                            bookmarkDrag = claim.isDragging
+                            // Match the View reader: once the first post-slop sample is not a
+                            // pull candidate, this gesture belongs to page turning/scrolling and
+                            // must not be reclaimed by a later diagonal direction change.
+                            bookmarkReleased = claim.isReleased
+                        }
+                        scrollDrag = transitionMode == ReaderTransitionMode.SCROLL &&
+                            ReaderMainAxisPolicy.isVerticalDominant(total.x, total.y)
+                        horizontalTurn = !bookmarkDrag && !scrollDrag &&
+                            ReaderMainAxisPolicy.isHorizontalDominant(total.x, total.y)
+                        if (horizontalTurn) {
+                            horizontalDrag = ReaderHorizontalDrag.capture(total.x)
+                            horizontalCapturedY = change.position.y
+                        }
+                    }
+                    if (bookmarkDrag) {
+                        val pull = pullBookmark(total, size.height.toFloat(), density, transitionMode, bookmarkEnabled)
+                        bookmarkOffset = pull.pageOffsetPx
+                        bookmarkArmed = pull.isArmed
+                        if (pull.isCandidate) {
+                            change.consume()
+                        } else {
+                            // Once handed to page turning, this gesture must never reclaim the pull.
+                            bookmarkDrag = false
+                            bookmarkReleased = true
+                            // The legacy reader restores curPage before forwarding MOVE to its
+                            // page delegate. Leaving this translation in place makes cover/slide
+                            // turns travel diagonally and can persist until the next DOWN.
+                            bookmarkArmed = false
+                            bookmarkOffset = 0f
+                            horizontalTurn = ReaderMainAxisPolicy.isHorizontalDominant(total.x, total.y)
+                            if (horizontalTurn) {
+                                horizontalDrag = ReaderHorizontalDrag.capture(total.x)
+                                horizontalCapturedY = change.position.y
+                            }
+                        }
+                    }
+                    if (horizontalTurn && transitionMode != ReaderTransitionMode.SCROLL) {
+                        transition = horizontalDrag?.transition(
+                            total.x, size.width.toFloat(),
+                            latestPages.previous != null, latestPages.next != null,
+                        ) ?: ReaderPageTransition(pageExtentPx = size.width.toFloat())
+                        transition.direction?.takeIf { transitionMode == ReaderTransitionMode.SIMULATION }?.let {
+                            curlTouchX = change.position.x
+                            curlCornerY = ReaderCurlTouchPolicy.cornerY(
+                                it, horizontalCapturedY, size.height.toFloat(),
+                            )
+                            curlTouchY = ReaderCurlTouchPolicy.dragY(
+                                it, horizontalCapturedY, change.position.y, size.height.toFloat(),
+                            )
+                        }
+                        displayOffset = transition.offsetPx
+                        change.consume()
+                    } else if (scrollDrag) {
+                        val window = latestPages
+                        val page = window.current
+                        if (page != null) {
+                            val result = ReaderScrollPolicy.apply(scrollOffset, change.positionChange().y, window.previous?.scrollExtentPx ?: 0f, page.scrollExtentPx, page.scrollViewportExtentPx(), window.previous != null, window.next != null)
+                            applyScrollResult(result, window)
+                            change.consume()
+                        }
+                    }
+                }
+            } finally {
+                longPressJob.cancel()
+                if (!released) {
+                    bookmarkArmed = false
+                    bookmarkOffset = 0f
+                    displayOffset = 0f
+                    transition = ReaderPageTransition()
+                }
+            }
+            if (released) latestReaderInteraction()
+            if (longPressed || grabbingStart || grabbingEnd) {
+                val selection = textSelection
+                if (released && selection != null) {
+                    val window = latestPages
+                    showSelectionMenu(selection, window)
+                }
+                return@awaitEachGesture
+            }
+            if (bookmarkDrag) {
+                val releasePull = pullBookmark(
+                    pointerPosition - down.position,
+                    size.height.toFloat(),
+                    density,
+                    transitionMode,
+                    bookmarkEnabled,
+                )
+                if (released && releasePull.isCandidate) {
+                    bookmarkOffset = releasePull.pageOffsetPx
+                }
+                if (released && PullBookmarkGesture.shouldToggleOnRelease(bookmarkDrag, releasePull)) {
+                    latestToggleBookmark()
+                }
+                bookmarkArmed = false
+                bookmarkReturnJob = animationScope.launch {
+                    Animatable(bookmarkOffset).animateTo(
+                        0f, tween(PullBookmarkDefaults.RETURN_DURATION_MILLIS),
+                    ) { bookmarkOffset = value }
+                }
+            } else if (scrollDrag) {
+                val velocity = if (released) velocityTracker.calculateVelocity().y else 0f
+                pageMotionJob = animationScope.launch {
+                    var lastValue = 0f
+                    try {
+                        Animatable(0f).animateDecay(velocity, scrollDecay) {
+                            val delta = value - lastValue
+                            lastValue = value
+                            // A page crossing publishes a new window asynchronously. Do not send
+                            // the same crossing more than once while that window is arriving.
+                            if (scrollCarryTarget == null) {
+                                val window = latestPages
+                                val page = window.current ?: return@animateDecay
+                                val result = ReaderScrollPolicy.apply(
+                                    scrollOffset,
+                                    delta,
+                                    window.previous?.scrollExtentPx ?: 0f,
+                                    page.scrollExtentPx,
+                                    page.scrollViewportExtentPx(),
+                                    window.previous != null,
+                                    window.next != null,
+                                )
+                                applyScrollResult(result, window)
+                                if (result.hitBoundary) throw ReaderScrollBoundaryReached()
+                            }
+                        }
+                    } catch (_: ReaderScrollBoundaryReached) {
+                        // Reaching the first/last content boundary ends the fling immediately.
+                    }
+                }
+            } else if (horizontalTurn && transition.dragging) {
+                val fade = transitionMode == ReaderTransitionMode.FADE
+                settlePageTurn(ReaderPageTransitionPolicy.release(
+                    transition,
+                    velocityPxPerSecond = if (fade) 0f else velocityTracker.calculateVelocity().x,
+                    commitProgress = if (fade) 0.1f else 0.35f,
+                    cancelled = !released,
+                    lastDragDeltaPx = if (fade) null else lastHorizontalDelta,
+                ))
+            } else if (released && !suppressTap && total.getDistance() < pageTouchSlop) {
+                val tapPlacement = pageViewportLayout().pageAt(down.position.x, down.position.y)
+                val elementHandled = tapPlacement?.page
+                    ?.elementAt(down.position.x, tapPlacement.localY(down.position.y))
+                    ?.let(onElementClick) == true
+                if (elementHandled) {
+                    // Element actions take precedence over reader tap zones.
+                } else dispatchTapAction(
+                    latestTapActionGrid.actionAt(
+                        down.position.x,
+                        down.position.y,
+                        size.width.toFloat(),
+                        size.height.toFloat(),
+                    )
+                )
+            }
+        }
+    }) {
+        if (ReaderViewportLayerPolicy.usesFixedBackground(transitionMode)) {
+            ReaderBackgroundSurface(
+                pageBackgroundImage,
+                backgroundImageAlpha,
+                Modifier.fillMaxSize(),
+            )
+        }
+        if (transitionMode == ReaderTransitionMode.SCROLL) {
+            Box(Modifier.fillMaxSize().drawWithContent {
+                clipRect(top = current.contentTopPx, bottom = current.contentBottomPx) {
+                    this@drawWithContent.drawContent()
+                }
+            }) {
+                ScrollPageStack(pages, scrollOffset, backgroundColor, pageBackgroundImage, backgroundImageAlpha, selectionColor, textAccentColor, textSelection, cachedImage, loadImage)
+            }
+        } else if (transitionMode == ReaderTransitionMode.SIMULATION && transition.direction != null) {
+            SimulationPageStack(pages, transition.direction!!, curlTouchX, curlTouchY, curlCornerY, backgroundColor, pageBackgroundImage, backgroundImageAlpha, selectionColor, textAccentColor, textSelection, cachedImage, loadImage)
+        } else {
+            @Composable
+            fun PageLayer(page: ReaderPage, transform: ReaderPageTransform, offsetY: Float = 0f) {
+                ReaderPageCanvas(
+                    page, backgroundColor, pageBackgroundImage, backgroundImageAlpha, selectionColor, textAccentColor,
+                    Modifier.fillMaxSize().graphicsLayer {
+                        translationX = transform.translationX
+                        translationY = offsetY + transform.translationY
+                        alpha = transform.alpha
+                    },
+                    textSelection,
+                    cachedImage,
+                    loadImage,
+                )
+            }
+            if (transforms.currentOnTop) {
+                transforms.next?.let { t -> pages.next?.let { PageLayer(it, t) } }
+            }
+            PageLayer(current, transforms.current, bookmarkOffset)
+            transforms.previous?.let { t -> pages.previous?.let { PageLayer(it, t) } }
+            if (!transforms.currentOnTop) {
+                transforms.next?.let { t -> pages.next?.let { PageLayer(it, t) } }
+            }
+        }
+        if (transitionMode == ReaderTransitionMode.COVER && transition.direction != null && displayOffset != 0f) {
+            Canvas(Modifier.fillMaxSize()) {
+                val direction = transition.direction ?: return@Canvas
+                val edge = ReaderCoverShadowPolicy.edgePx(direction, displayOffset, size.width)
+                val shadowWidth = ReaderCoverShadowPolicy.widthDp * density
+                val dark = Color(ReaderCoverShadowPolicy.colorArgb)
+                drawRect(
+                    Brush.horizontalGradient(
+                        listOf(dark, Color.Transparent),
+                        edge,
+                        edge + shadowWidth,
+                    ),
+                    Offset(edge, 0f),
+                    Size(shadowWidth, size.height),
+                )
+            }
+        }
+        if (transitionMode != ReaderTransitionMode.SCROLL && autoPageActive && autoRevealPx > 0f) {
+            pages.next?.let { page ->
+                Box(Modifier.fillMaxSize().drawWithContent {
+                    clipRect(bottom = autoRevealPx.coerceAtMost(size.height)) { this@drawWithContent.drawContent() }
+                }) {
+                    ReaderPageCanvas(page, backgroundColor, pageBackgroundImage, backgroundImageAlpha, selectionColor, textAccentColor, Modifier.fillMaxSize(), textSelection, cachedImage, loadImage)
+                }
+            }
+            Canvas(Modifier.fillMaxSize()) {
+                drawRect(
+                    color = autoPageIndicatorColor,
+                    topLeft = Offset(
+                        0f,
+                        ReaderAutoPagePolicy.indicatorTopPx(autoRevealPx, size.height),
+                    ),
+                    size = Size(size.width, 1f),
+                )
+            }
+        }
+        if (ReaderViewportLayerPolicy.usesFixedPageChrome(transitionMode)) {
+            ReaderPageDecorationOverlay(current, Modifier.fillMaxSize())
+        }
+        textSelection?.let { selection ->
+            val bounds = pageViewportLayout(pages).selectionBounds(selection).map { it.bounds }
+            val handleColor = selectionColor.copy(alpha = 1f)
+            val screenDensity = LocalDensity.current.density
+            val handleShadowPaint = remember(screenDensity) {
+                Paint().apply {
+                    isAntiAlias = true
+                    color = Color.White.toArgb()
+                    setShadowLayer(4f * screenDensity, 0f, 2f * screenDensity, 0x40000000)
+                }
+            }
+            Canvas(Modifier.fillMaxSize()) {
+                clipRect(
+                    top = if (transitionMode == ReaderTransitionMode.SCROLL) current.contentTopPx else 0f,
+                    bottom = if (transitionMode == ReaderTransitionMode.SCROLL) current.contentBottomPx else size.height,
+                ) {
+                    fun drawPinHandle(x: Float, top: Float, bottom: Float) {
+                        val lineWidth = SelectionHandleStrokeWidth.toPx()
+                        val radius = SelectionHandleRadius.toPx()
+                        // 竖线止于行底部，圆的顶端圆周与竖线末端相切
+                        val center = Offset(x, bottom + radius)
+                        drawLine(handleColor, Offset(x, top), Offset(x, bottom), lineWidth, StrokeCap.Round)
+                        drawIntoCanvas { it.nativeCanvas.drawCircle(x, center.y, radius, handleShadowPaint) }
+                        drawCircle(handleColor, radius, center, style = Stroke(SelectionHandleStrokeWidth.toPx()))
+                    }
+                    bounds.firstOrNull()?.let { rect -> drawPinHandle(rect.left, rect.top, rect.bottom) }
+                    bounds.lastOrNull()?.let { rect -> drawPinHandle(rect.right, rect.top, rect.bottom) }
+                }
+            }
+        }
+        AnimatedVisibility(
+            visible = bookmarkArmed,
+            modifier = Modifier.align(Alignment.TopCenter).offset {
+                IntOffset(0, current.contentTopPx.roundToInt())
+            }.padding(top = PullBookmarkDefaults.HINT_CONTENT_TOP_MARGIN_DP.dp),
+            enter = fadeIn(tween(PullBookmarkDefaults.HINT_FADE_MILLIS)),
+            exit = fadeOut(tween(0)),
+        ) {
+            Text(
+                text = stringResource(if (bookmarkWillRemove) {
+                    R.string.bookmark_swipe_release_to_remove
+                } else R.string.bookmark_swipe_release_to_add),
+                color = Color.White,
+                fontSize = 14.sp,
+                modifier = Modifier.background(
+                    Color(0xA0000000),
+                    RoundedCornerShape(PullBookmarkDefaults.HINT_CORNER_RADIUS_DP.dp),
+                )
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+private fun pullBookmark(offset: Offset, height: Float, density: Float, mode: ReaderTransitionMode, enabled: Boolean) =
+    PullBookmarkGesture.drag(
+        offset.x,
+        offset.y,
+        height,
+        enabled,
+        mode != ReaderTransitionMode.SCROLL,
+        false,
+        PullBookmarkDefaults.config(PullBookmarkDefaults.ACTIVATION_DISTANCE_DP * density),
+    )
+
+private class ReaderScrollBoundaryReached : CancellationException()
+
+private fun ReaderPage.scrollViewportExtentPx(): Float =
+    (contentBottomPx - contentTopPx).coerceAtLeast(1f)
+
+@Composable
+private fun ScrollPageStack(
+    pages: ReaderPageWindow,
+    offsetY: Float,
+    background: Color,
+    backgroundImage: Drawable?,
+    backgroundImageAlpha: Float,
+    selection: Color,
+    readAloud: Color,
+    activeSelection: ReaderSelection?,
+    cachedImage: (ReaderElement.Image) -> Bitmap?,
+    loadImage: suspend (ReaderElement.Image) -> Bitmap?,
+) {
+    val current = pages.current ?: return
+    val density = LocalDensity.current
+    fun Modifier.pageExtent(page: ReaderPage) = fillMaxWidth().height(with(density) {
+        maxOf(page.heightPx.toFloat(), page.contentTopPx + page.scrollExtentPx).toDp()
+    })
+    pages.previous?.let { previous ->
+        ReaderPageCanvas(previous, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.pageExtent(previous).offset { IntOffset(0, (offsetY - previous.scrollExtentPx).roundToInt()) }.graphicsLayer { }, activeSelection, cachedImage, loadImage, drawBackground = false, drawDecoration = false)
+    }
+    ReaderPageCanvas(current, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.pageExtent(current).offset { IntOffset(0, offsetY.roundToInt()) }.graphicsLayer { }, activeSelection, cachedImage, loadImage, drawBackground = false, drawDecoration = false)
+    pages.next?.let { next ->
+        ReaderPageCanvas(next, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.pageExtent(next).offset { IntOffset(0, (offsetY + current.scrollExtentPx).roundToInt()) }.graphicsLayer { }, activeSelection, cachedImage, loadImage, drawBackground = false, drawDecoration = false)
+    }
+}
+
+@Composable
+private fun SimulationPageStack(
+    pages: ReaderPageWindow,
+    direction: ReaderTurnDirection,
+    touchX: Float,
+    touchY: Float,
+    cornerY: Float,
+    background: Color,
+    backgroundImage: Drawable?,
+    backgroundImageAlpha: Float,
+    selection: Color,
+    readAloud: Color,
+    activeSelection: ReaderSelection?,
+    cachedImage: (ReaderElement.Image) -> Bitmap?,
+    loadImage: suspend (ReaderElement.Image) -> Bitmap?,
+) {
+    val basePage = if (direction == ReaderTurnDirection.NEXT) pages.current else pages.previous
+    val revealPage = if (direction == ReaderTurnDirection.NEXT) pages.next else pages.current
+    if (basePage == null || revealPage == null) return
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val density = LocalDensity.current
+        val width = with(density) { maxWidth.toPx() }
+        val height = with(density) { maxHeight.toPx() }
+        val frame = remember(width, height, touchX, touchY, cornerY) {
+            PageCurlGeometry.calculate(
+                width,
+                height,
+                touchX,
+                touchY.coerceIn(.1f, height - .1f),
+                lockedCorner = CurlPoint(width, cornerY),
+            )
+        }
+        if (frame == null) {
+            ReaderPageCanvas(basePage, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.fillMaxSize(), activeSelection, cachedImage, loadImage)
+            return@BoxWithConstraints
+        }
+        val paths = remember(frame, width, height) { frame.renderPaths(width, height) }
+        val path0 = paths.front
+        val pathNext = paths.reveal
+        val pathBack = paths.back
+        val baseLayer = rememberGraphicsLayer()
+        Box(Modifier.fillMaxSize().drawWithContent {
+            baseLayer.record { this@drawWithContent.drawContent() }
+            clipPath(path0, ClipOp.Difference) { drawLayer(baseLayer) }
+        }) {
+            ReaderPageCanvas(basePage, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.fillMaxSize(), activeSelection, cachedImage, loadImage)
+        }
+        Box(Modifier.fillMaxSize().drawWithContent {
+            clipPath(path0) { clipPath(pathNext) {
+                this@drawWithContent.drawContent()
+                drawCurlBackShadow(frame)
+            } }
+        }) {
+            ReaderPageCanvas(revealPage, background, backgroundImage, backgroundImageAlpha, selection, readAloud, Modifier.fillMaxSize(), activeSelection, cachedImage, loadImage)
+        }
+        Canvas(Modifier.fillMaxSize()) {
+            clipPath(path0) { clipPath(pathBack) {
+                drawRect(background)
+                val matrix = Matrix().apply {
+                    values[Matrix.ScaleX] = frame.mirror.scaleX
+                    values[Matrix.SkewX] = frame.mirror.skewX
+                    values[Matrix.SkewY] = frame.mirror.skewY
+                    values[Matrix.ScaleY] = frame.mirror.scaleY
+                    values[Matrix.TranslateX] = frame.mirror.translateX
+                    values[Matrix.TranslateY] = frame.mirror.translateY
+                }
+                withTransform({ transform(matrix) }) { drawLayer(baseLayer) }
+                drawCurlFolderShadow(frame)
+            } }
+            drawCurlFrontShadows(frame, paths)
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCurlFrontShadows(
+    frame: PageCurlFrame,
+    paths: ReaderCurlRenderPaths,
+) {
+    val curlPath = paths.front
+    val reverse = frame.corner.x == 0f && frame.corner.y == size.height || frame.corner.x == size.width && frame.corner.y == 0f
+    clipPath(curlPath, ClipOp.Difference) { clipPath(paths.frontShadowHorizontal) {
+        val left = if (reverse) frame.control1.x else frame.control1.x - 25f
+        val right = if (reverse) frame.control1.x + 25f else frame.control1.x + 1f
+        val rotation = (atan2((frame.touch.x - frame.control1.x).toDouble(), (frame.control1.y - frame.touch.y).toDouble()) * 180.0 / PI).toFloat()
+        withTransform({ rotate(rotation, Offset(frame.control1.x, frame.control1.y)) }) {
+            drawRect(Brush.horizontalGradient(if (reverse) listOf(Color(ReaderCurlVisualPolicy.frontShadowDarkArgb), Color.Transparent) else listOf(Color.Transparent, Color(ReaderCurlVisualPolicy.frontShadowDarkArgb)), left, right), Offset(left, frame.control1.y - hypot(size.width.toDouble(), size.height.toDouble()).toFloat()), Size(right - left, hypot(size.width.toDouble(), size.height.toDouble()).toFloat()))
+        }
+    } }
+    clipPath(curlPath, ClipOp.Difference) { clipPath(paths.frontShadowVertical) {
+        val top = if (reverse) frame.control2.y else frame.control2.y - 25f
+        val bottom = if (reverse) frame.control2.y + 25f else frame.control2.y + 1f
+        val rotation = (atan2((frame.control2.y - frame.touch.y).toDouble(), (frame.control2.x - frame.touch.x).toDouble()) * 180.0 / PI).toFloat()
+        val diagonal = hypot(size.width.toDouble(), size.height.toDouble()).toFloat()
+        val adjustedY = if (frame.control2.y < 0f) frame.control2.y - size.height else frame.control2.y
+        val hmg = hypot(frame.control2.x.toDouble(), adjustedY.toDouble()).toFloat()
+        val left = if (hmg > diagonal) frame.control2.x - 25f - hmg else frame.control2.x - diagonal
+        val right = if (hmg > diagonal) frame.control2.x + diagonal - hmg else frame.control2.x
+        withTransform({ rotate(rotation, Offset(frame.control2.x, frame.control2.y)) }) {
+            drawRect(Brush.verticalGradient(if (reverse) listOf(Color(ReaderCurlVisualPolicy.frontShadowDarkArgb), Color.Transparent) else listOf(Color.Transparent, Color(ReaderCurlVisualPolicy.frontShadowDarkArgb)), top, bottom), Offset(left, top), Size(right - left, bottom - top))
+        }
+    } }
+}
+
+private data class ReaderCurlRenderPaths(
+    val front: Path,
+    val reveal: Path,
+    val back: Path,
+    val frontShadowHorizontal: Path,
+    val frontShadowVertical: Path,
+)
+
+private fun PageCurlFrame.renderPaths(width: Float, height: Float): ReaderCurlRenderPaths {
+    val reverse = corner.x == 0f && corner.y == height || corner.x == width && corner.y == 0f
+    val angle = if (reverse) {
+        PI / 4 - atan2((control1.y - touch.y).toDouble(), (touch.x - control1.x).toDouble())
+    } else {
+        PI / 4 - atan2((touch.y - control1.y).toDouble(), (touch.x - control1.x).toDouble())
+    }
+    val shadowX = (touch.x + 25f * 1.414f * cos(angle)).toFloat()
+    val shadowY = (touch.y + (if (reverse) 1 else -1) * 25f * 1.414f * sin(angle)).toFloat()
+    return ReaderCurlRenderPaths(
+        front = Path().apply {
+            moveTo(start1.x, start1.y); quadraticTo(control1.x, control1.y, end1.x, end1.y)
+            lineTo(touch.x, touch.y); lineTo(end2.x, end2.y)
+            quadraticTo(control2.x, control2.y, start2.x, start2.y); lineTo(corner.x, corner.y); close()
+        },
+        reveal = Path().apply {
+            moveTo(start1.x, start1.y); lineTo(vertex1.x, vertex1.y); lineTo(vertex2.x, vertex2.y)
+            lineTo(start2.x, start2.y); lineTo(corner.x, corner.y); close()
+        },
+        back = Path().apply {
+            moveTo(vertex2.x, vertex2.y); lineTo(vertex1.x, vertex1.y); lineTo(end1.x, end1.y)
+            lineTo(touch.x, touch.y); lineTo(end2.x, end2.y); close()
+        },
+        frontShadowHorizontal = Path().apply {
+            moveTo(shadowX, shadowY); lineTo(touch.x, touch.y); lineTo(control1.x, control1.y)
+            lineTo(start1.x, start1.y); close()
+        },
+        frontShadowVertical = Path().apply {
+            moveTo(shadowX, shadowY); lineTo(touch.x, touch.y); lineTo(control2.x, control2.y)
+            lineTo(start2.x, start2.y); close()
+        },
+    )
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCurlBackShadow(frame: PageCurlFrame) {
+    val reverse = frame.corner.x == 0f && frame.corner.y == size.height || frame.corner.x == size.width && frame.corner.y == 0f
+    val shadowWidth = frame.touchToCornerDistance / 4f
+    val left = if (reverse) frame.start1.x else frame.start1.x - shadowWidth
+    val right = if (reverse) frame.start1.x + shadowWidth else frame.start1.x
+    if (right <= left) return
+    withTransform({ rotate(frame.degrees, Offset(frame.start1.x, frame.start1.y)) }) {
+        drawRect(Brush.horizontalGradient(if (reverse) listOf(Color(ReaderCurlVisualPolicy.backShadowDarkArgb), Color.Transparent) else listOf(Color.Transparent, Color(ReaderCurlVisualPolicy.backShadowDarkArgb)), left, right), Offset(left, frame.start1.y), Size(right - left, hypot(size.width.toDouble(), size.height.toDouble()).toFloat()))
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCurlFolderShadow(frame: PageCurlFrame) {
+    val width = minOf(abs((frame.start1.x - frame.control1.x) / 2f), abs((frame.start2.y - frame.control2.y) / 2f)).coerceAtLeast(1f)
+    val reverse = frame.corner.x == 0f && frame.corner.y == size.height || frame.corner.x == size.width && frame.corner.y == 0f
+    val left = if (reverse) frame.start1.x - 1f else frame.start1.x - width - 1f
+    val right = if (reverse) frame.start1.x + width + 1f else frame.start1.x + 1f
+    withTransform({ rotate(frame.degrees, Offset(frame.start1.x, frame.start1.y)) }) {
+        drawRect(Brush.horizontalGradient(if (reverse) listOf(Color.Transparent, Color(ReaderCurlVisualPolicy.folderShadowDarkArgb)) else listOf(Color(ReaderCurlVisualPolicy.folderShadowDarkArgb), Color.Transparent), left, right), Offset(left, frame.start1.y), Size(right - left, hypot(size.width.toDouble(), size.height.toDouble()).toFloat()))
+    }
+}
+
+@Composable
+private fun ReaderPageCanvas(
+    page: ReaderPage,
+    background: Color,
+    backgroundImage: Drawable?,
+    backgroundImageAlpha: Float,
+    selection: Color,
+    readAloud: Color,
+    modifier: Modifier,
+    activeSelection: ReaderSelection?,
+    cachedImage: (ReaderElement.Image) -> Bitmap?,
+    loadImage: suspend (ReaderElement.Image) -> Bitmap?,
+    drawBackground: Boolean = true,
+    drawDecoration: Boolean = true,
+) {
+    val isolatedBackgroundImage = remember(backgroundImage) { backgroundImage?.isolatedCopy() }
+    val textElements = remember(page.elements) {
+        page.elements.filterIsInstance<ReaderElement.Text>()
+    }
+    val paints = remember(textElements) {
+        textElements.map { it.style }.distinct()
+            .associateWith(ReaderAndroidPaintFactory::create)
+    }
+    val badge = page.decoration.bookmarkBadge.takeIf { drawDecoration }
+    val cachedBadgeImage = badge?.let(ReaderBookmarkBadgeRenderer::cachedResult)
+    val badgeImage by produceState(cachedBadgeImage, badge) {
+        value = badge?.let { it to withContext(Dispatchers.IO) { ReaderBookmarkBadgeRenderer.load(it) } }
+    }
+    val pageImages = page.elements.filterIsInstance<ReaderElement.Image>()
+    val cachedImages = pageImages.mapNotNull { element ->
+        cachedImage(element)?.takeUnless(Bitmap::isRecycled)?.let { element to it }
+    }.toMap()
+    var images by remember(page.id, page.layoutRevision, page.revision, pageImages) {
+        mutableStateOf(cachedImages)
+    }
+    LaunchedEffect(page.id, page.layoutRevision, page.revision, pageImages) {
+        pageImages.forEach { element ->
+            val bitmap = (cachedImage(element) ?: loadImage(element))
+                ?.takeUnless(Bitmap::isRecycled)
+                ?: return@forEach
+            if (images[element] !== bitmap) {
+                images = images + (element to bitmap)
+            }
+        }
+    }
+    val textBackgrounds = remember(page.elements) { page.textBackgroundRuns() }
+    val textBackgroundPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    }
+    val decorationDrawCache = remember(page.elements) {
+        ReaderPageDecorationDrawCache.create(page)
+    }
+    val selectedTextBounds = remember(textElements, activeSelection) {
+        textElements
+            .filter { it.selected || activeSelection?.contains(it) == true }
+            .map(ReaderElement.Text::bounds)
+            .mergeSelectionBounds()
+    }
+    val textBackgroundSources = remember(textBackgrounds) {
+        textBackgrounds.map { it.image.source }.distinct()
+    }
+    val cachedTextBackgrounds = textBackgroundSources.mapNotNull { source ->
+        ReaderTextBackgroundLoader.cached(source)?.let { source to it }
+    }.toMap()
+    val textBackgroundBitmaps by produceState(cachedTextBackgrounds, textBackgroundSources) {
+        value = withContext(Dispatchers.IO) {
+            textBackgroundSources.mapNotNull { source ->
+                ReaderTextBackgroundLoader.load(source)?.let { source to it }
+            }.toMap()
+        }
+    }
+    val tipPaints = remember(
+        page.decoration.header,
+        page.decoration.footer,
+        drawDecoration,
+    ) {
+        if (!drawDecoration) emptyMap() else listOfNotNull(page.decoration.header, page.decoration.footer).associateWith { row ->
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+                color = row.colorArgb
+                textSize = row.fontSizePx
+                typeface = ReaderAndroidPaintFactory.loadTypeface(row.fontPath, 400, false)
+            }
+        }
+    }
+    Canvas(if (drawBackground) modifier.background(background) else modifier) {
+        val native = drawContext.canvas.nativeCanvas
+        isolatedBackgroundImage?.takeIf { drawBackground }?.let { drawable ->
+            drawable.bounds = android.graphics.Rect(0, 0, size.width.roundToInt(), size.height.roundToInt())
+            drawable.alpha = (backgroundImageAlpha.coerceIn(0f, 1f) * 255).roundToInt()
+            drawable.draw(native)
+        }
+        textBackgrounds.forEach { run ->
+            textBackgroundBitmaps[run.image.source]?.let { bitmap ->
+                drawTextBackground(native, bitmap, run, textBackgroundPaint)
+            }
+        }
+        textElements.forEach { element ->
+            element.style.backgroundArgb?.let { color ->
+                drawRect(
+                    Color(color),
+                    Offset(element.bounds.left, element.bounds.top),
+                    Size(element.bounds.width, element.bounds.height),
+                )
+            }
+        }
+        selectedTextBounds.forEach { rect ->
+            drawRect(selection, Offset(rect.left, rect.top), Size(rect.width, rect.height))
+        }
+        page.elements.forEach { e -> when (e) {
+            is ReaderElement.Text -> {
+                val paint = paints.getValue(e.style)
+                paint.color = e.resolvedColorArgb(readAloud.toArgb())
+                paint.isUnderlineText = e.style.nativeUnderline || e.drawsLinkUnderline
+                native.drawText(e.value, e.bounds.left, e.baselinePx, paint)
+            }
+            is ReaderElement.Image -> images[e]?.let { bitmap ->
+                ReaderImageDrawLayout.fitCenter(e.bounds, bitmap.width, bitmap.height)?.let { layout ->
+                    drawImage(
+                        image = bitmap.asImageBitmap(),
+                        dstOffset = IntOffset(layout.leftPx.roundToInt(), layout.topPx.roundToInt()),
+                        dstSize = IntSize(
+                            layout.widthPx.roundToInt().coerceAtLeast(1),
+                            layout.heightPx.roundToInt().coerceAtLeast(1),
+                        ),
+                    )
+                }
+            } ?: drawRect(Color.Gray.copy(alpha = .18f), Offset(e.bounds.left, e.bounds.top), Size(e.bounds.width, e.bounds.height))
+            is ReaderElement.Review -> if (e.count > 0) drawReview(native, e, paints.values.firstOrNull()?.color ?: android.graphics.Color.GRAY)
+            is ReaderElement.Action -> Unit
+            is ReaderElement.Spacer -> Unit
+            is ReaderElement.ParagraphMarker -> {
+                if (e.circular) {
+                    drawCircle(Color(e.colorArgb), e.strokeWidthPx / 2f, Offset(e.bounds.left, e.bounds.top))
+                } else {
+                    drawLine(
+                        Color(e.colorArgb),
+                        Offset(e.bounds.left, e.bounds.top),
+                        Offset(e.bounds.right, e.bounds.bottom),
+                        e.strokeWidthPx,
+                    )
+                }
+            }
+            is ReaderElement.Rule -> Unit
+        } }
+        page.emphasisUnderlineRuns().forEach { run ->
+            drawLine(
+                color = Color(run.style.colorArgb),
+                start = Offset(run.startPx, run.yPx),
+                end = Offset(run.endPx, run.yPx),
+                strokeWidth = run.style.widthPx,
+            )
+        }
+        decorationDrawCache.contentRules.forEach { it.draw(native) }
+        decorationDrawCache.styledUnderlines.forEach { it.draw(native) }
+        decorationDrawCache.overlayRules.forEach { it.draw(native) }
+        if (drawDecoration) drawPageDecoration(native, page, tipPaints, badgeImage)
+    }
+}
+
+@Composable
+fun ReaderBackgroundSurface(
+    backgroundImage: Drawable?,
+    backgroundImageAlpha: Float,
+    modifier: Modifier,
+    animateAppearance: Boolean = false,
+) {
+    val isolatedBackgroundImage = remember(backgroundImage) { backgroundImage?.isolatedCopy() }
+    val targetAlpha = if (isolatedBackgroundImage == null) 0f else backgroundImageAlpha
+    val animatedAlpha by animateFloatAsState(
+        targetValue = targetAlpha,
+        animationSpec = if (animateAppearance) tween(450) else snap(),
+        label = "readerBackgroundAlpha",
+    )
+    Canvas(modifier) {
+        isolatedBackgroundImage?.let { drawable ->
+            drawable.bounds = android.graphics.Rect(0, 0, size.width.roundToInt(), size.height.roundToInt())
+            drawable.alpha = (animatedAlpha.coerceIn(0f, 1f) * 255).roundToInt()
+            drawable.draw(drawContext.canvas.nativeCanvas)
+        }
+    }
+}
+
+private fun Drawable.isolatedCopy(): Drawable =
+    constantState?.newDrawable()?.mutate() ?: mutate()
+
+@Composable
+private fun ReaderPageDecorationOverlay(page: ReaderPage, modifier: Modifier) {
+    val badge = page.decoration.bookmarkBadge
+    val cachedBadgeImage = badge?.let(ReaderBookmarkBadgeRenderer::cachedResult)
+    val badgeImage by produceState(cachedBadgeImage, badge) {
+        value = badge?.let { it to withContext(Dispatchers.IO) { ReaderBookmarkBadgeRenderer.load(it) } }
+    }
+    val tipPaints = remember(page.decoration.header, page.decoration.footer) {
+        listOfNotNull(page.decoration.header, page.decoration.footer).associateWith(::createTipPaint)
+    }
+    Canvas(modifier) {
+        drawPageDecoration(drawContext.canvas.nativeCanvas, page, tipPaints, badgeImage)
+    }
+}
+
+private fun createTipPaint(row: ReaderTipRow) = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+    color = row.colorArgb
+    textSize = row.fontSizePx
+    typeface = ReaderAndroidPaintFactory.loadTypeface(row.fontPath, 400, false)
+}
+
+internal fun <T> resolveReaderTipResource(
+    row: ReaderTipRow,
+    cached: Map<ReaderTipRow, T>,
+    create: (ReaderTipRow) -> T,
+): T = cached[row] ?: create(row)
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPageDecoration(
+    canvas: android.graphics.Canvas,
+    page: ReaderPage,
+    tipPaints: Map<ReaderTipRow, Paint>,
+    badgeImage: Pair<io.legado.app.feature.reader.core.model.ReaderBookmarkBadge, Bitmap?>?,
+) {
+    page.decoration.header?.takeIf { it.visible }?.let { row ->
+        val paint = resolveReaderTipResource(row, tipPaints, ::createTipPaint)
+        drawTipRow(
+            canvas,
+            row,
+            paint,
+            ReaderTipRowLayout.headerBaseline(row.paddingTopPx, paint.fontMetrics.top),
+        )
+        row.dividerColorArgb?.let {
+            val metrics = paint.fontMetrics
+            val dividerY = ReaderTipRowLayout.extent(
+                row.paddingTopPx, metrics.top, metrics.bottom, row.paddingBottomPx,
+            )
+            drawLine(Color(it), Offset(0f, dividerY), Offset(size.width, dividerY), 1f)
+        }
+    }
+    page.decoration.footer?.takeIf { it.visible }?.let { row ->
+        val paint = resolveReaderTipResource(row, tipPaints, ::createTipPaint)
+        drawTipRow(
+            canvas,
+            row,
+            paint,
+            ReaderTipRowLayout.footerBaseline(
+                size.height, row.paddingBottomPx, paint.fontMetrics.bottom,
+            ),
+        )
+        row.dividerColorArgb?.let {
+            val metrics = paint.fontMetrics
+            val dividerY = size.height - ReaderTipRowLayout.extent(
+                row.paddingTopPx, metrics.top, metrics.bottom, row.paddingBottomPx,
+            )
+            drawLine(Color(it), Offset(0f, dividerY), Offset(size.width, dividerY), 1f)
+        }
+    }
+    page.decoration.bookmarkBadge?.let { badge ->
+        if (shouldDrawReaderBookmarkBadge(badge, badgeImage)) {
+            ReaderBookmarkBadgeRenderer.draw(
+                canvas,
+                badge,
+                badgeImage?.takeIf { it.first == badge }?.second,
+            )
+        }
+    }
+}
+
+internal fun shouldDrawReaderBookmarkBadge(
+    badge: io.legado.app.feature.reader.core.model.ReaderBookmarkBadge,
+    loaded: Pair<io.legado.app.feature.reader.core.model.ReaderBookmarkBadge, Bitmap?>?,
+): Boolean = badge.imageSource.isBlank() || loaded?.first == badge
+
+private fun drawTextBackground(
+    canvas: android.graphics.Canvas,
+    bitmap: Bitmap,
+    run: io.legado.app.feature.reader.core.model.ReaderTextBackgroundRun,
+    paint: Paint,
+) {
+    val bounds = run.contentBounds
+    val image = run.image
+    if (bounds.width <= 0f || bounds.height <= 0f) return
+    val destination = android.graphics.RectF(bounds.left, bounds.top, bounds.right, bounds.bottom)
+    // One paint is retained per page layer so page-turn frames do not allocate per styled run.
+    // A tiled predecessor leaves a shader behind, therefore always clear it before reusing it.
+    paint.shader = null
+    val scale = image.scale.coerceIn(0.1f, 5f)
+    when (image.fit) {
+        1 -> {
+            val width = bounds.width * scale
+            val height = bounds.height * scale
+            val rect = android.graphics.RectF(
+                bounds.left + (bounds.width - width) / 2f,
+                bounds.top + (bounds.height - height) / 2f,
+                bounds.left + (bounds.width + width) / 2f,
+                bounds.top + (bounds.height + height) / 2f,
+            )
+            canvas.save()
+            canvas.clipRect(destination)
+            canvas.drawBitmap(bitmap, null, rect, paint)
+            canvas.restore()
+        }
+        2 -> {
+            val fit = maxOf(bounds.width / bitmap.width, bounds.height / bitmap.height) * scale
+            val width = bitmap.width * fit
+            val height = bitmap.height * fit
+            val rect = android.graphics.RectF(
+                bounds.left + (bounds.width - width) / 2f,
+                bounds.top + (bounds.height - height) / 2f,
+                bounds.left + (bounds.width + width) / 2f,
+                bounds.top + (bounds.height + height) / 2f,
+            )
+            canvas.save()
+            canvas.clipRect(destination)
+            canvas.drawBitmap(bitmap, null, rect, paint)
+            canvas.restore()
+        }
+        3 -> drawNineSliceBackground(
+            canvas = canvas,
+            bitmap = bitmap,
+            content = destination,
+            frame = android.graphics.RectF(run.bounds.left, run.bounds.top, run.bounds.right, run.bounds.bottom),
+            image = image,
+            paint = paint,
+        )
+        else -> {
+            val shader = BitmapShader(bitmap, Shader.TileMode.REPEAT, Shader.TileMode.REPEAT)
+            val matrix = android.graphics.Matrix().apply {
+                setScale(scale, scale)
+                postTranslate(bounds.left, bounds.top)
+            }
+            shader.setLocalMatrix(matrix)
+            paint.shader = shader
+            canvas.drawRect(destination, paint)
+        }
+    }
+}
+
+private fun drawNineSliceBackground(
+    canvas: android.graphics.Canvas,
+    bitmap: Bitmap,
+    content: android.graphics.RectF,
+    frame: android.graphics.RectF,
+    image: ReaderTextBackgroundImage,
+    paint: Paint,
+) {
+    ReaderNineSliceLayout.cells(
+        bitmap.width,
+        bitmap.height,
+        ReaderRect(content.left, content.top, content.right, content.bottom),
+        ReaderRect(frame.left, frame.top, frame.right, frame.bottom),
+        image,
+    ).forEach { cell ->
+        canvas.drawBitmap(
+            bitmap,
+            android.graphics.Rect(cell.source.left, cell.source.top, cell.source.right, cell.source.bottom),
+            android.graphics.RectF(
+                cell.destination.left,
+                cell.destination.top,
+                cell.destination.right,
+                cell.destination.bottom,
+            ),
+            paint,
+        )
+    }
+}
+
+private fun drawReview(canvas: android.graphics.Canvas, review: ReaderElement.Review, colorArgb: Int) {
+    val start = review.bounds.left
+    val end = review.bounds.right
+    val baseline = review.baselinePx
+    val height = review.textSizePx
+    val path = android.graphics.Path().apply {
+        moveTo(start + 1f, baseline - height * 2f / 5f)
+        lineTo(start + height / 6f, baseline - height * .55f)
+        lineTo(start + height / 6f, baseline - height * .8f)
+        lineTo(end - 1f, baseline - height * .8f)
+        lineTo(end - 1f, baseline)
+        lineTo(start + height / 6f, baseline)
+        lineTo(start + height / 6f, baseline - height / 4f)
+        close()
+    }
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = colorArgb
+        textSize = height * .55f
+        textAlign = Paint.Align.CENTER
+    }
+    paint.style = Paint.Style.STROKE
+    canvas.drawPath(path, paint)
+    paint.style = Paint.Style.FILL
+    canvas.drawText(review.count.coerceAtMost(999).toString(), (start + height / 9f + end) / 2f, baseline - height * .23f, paint)
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTipRow(
+    canvas: android.graphics.Canvas,
+    row: ReaderTipRow,
+    paint: Paint,
+    baseline: Float,
+) {
+    row.tips.forEach { tip ->
+        if (tip.visual == ReaderTipVisual.TEXT) {
+            val x = when (tip.alignment) {
+                ReaderTipAlignment.START -> { paint.textAlign = Paint.Align.LEFT; row.paddingLeftPx }
+                ReaderTipAlignment.CENTER -> { paint.textAlign = Paint.Align.CENTER; size.width / 2f }
+                ReaderTipAlignment.END -> { paint.textAlign = Paint.Align.RIGHT; size.width - row.paddingRightPx }
+            }
+            canvas.drawText(tip.text, x, baseline, paint)
+        } else {
+            drawVisualTip(canvas, row, tip, paint, baseline)
+        }
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisualTip(
+    canvas: android.graphics.Canvas,
+    row: ReaderTipRow,
+    tip: ReaderPageTip,
+    paint: Paint,
+    baseline: Float,
+) {
+    val unit = density
+    val gap = 4f * unit
+    val batteryWidth = 28f * unit
+    val number = tip.batteryPercent.coerceIn(0, 100).toString()
+    val numberWidth = paint.measureText(number)
+    val textWidth = paint.measureText(tip.text)
+    val visualWidth = when (tip.visual) {
+        ReaderTipVisual.BATTERY_OUTER -> batteryWidth + 2f * unit + numberWidth
+        ReaderTipVisual.BATTERY_INNER -> (if (tip.text.isEmpty()) 0f else textWidth + gap) + batteryWidth
+        ReaderTipVisual.BATTERY_ICON -> batteryWidth
+        ReaderTipVisual.BATTERY_CLASSIC -> (if (tip.text.isEmpty()) 0f else textWidth + gap) + numberWidth + 10f * unit
+        ReaderTipVisual.ARROW -> 12f * unit + 8f * unit + textWidth
+        ReaderTipVisual.TEXT -> textWidth
+    }
+    val left = when (tip.alignment) {
+        ReaderTipAlignment.START -> row.paddingLeftPx
+        ReaderTipAlignment.CENTER -> (size.width - visualWidth) / 2f
+        ReaderTipAlignment.END -> size.width - row.paddingRightPx - visualWidth
+    }
+    paint.textAlign = Paint.Align.LEFT
+    when (tip.visual) {
+        ReaderTipVisual.BATTERY_OUTER -> {
+            drawBatteryGlyph(canvas, left, baseline, tip.batteryPercent, paint, drawNumberInside = false)
+            canvas.drawText(number, left + batteryWidth + 2f * unit, baseline, paint)
+        }
+        ReaderTipVisual.BATTERY_INNER -> {
+            val batteryLeft = if (tip.text.isEmpty()) left else {
+                canvas.drawText(tip.text, left, baseline, paint)
+                left + textWidth + gap
+            }
+            drawBatteryGlyph(canvas, batteryLeft, baseline, tip.batteryPercent, paint, drawNumberInside = true)
+        }
+        ReaderTipVisual.BATTERY_ICON ->
+            drawBatteryGlyph(canvas, left, baseline, tip.batteryPercent, paint, drawNumberInside = false)
+        ReaderTipVisual.BATTERY_CLASSIC -> {
+            val numberLeft = if (tip.text.isEmpty()) left + 4f * unit else {
+                canvas.drawText(tip.text, left, baseline, paint)
+                left + textWidth + gap + 4f * unit
+            }
+            canvas.drawText(number, numberLeft, baseline, paint)
+            val top = baseline + paint.fontMetrics.ascent - 2f * unit
+            val bottom = baseline + paint.fontMetrics.descent + 2f * unit
+            val frame = Paint(paint).apply { style = Paint.Style.STROKE; strokeWidth = unit.coerceAtLeast(1f) }
+            canvas.drawRect(numberLeft - 2f * unit, top, numberLeft + numberWidth + 2f * unit, bottom, frame)
+            canvas.drawRect(
+                numberLeft + numberWidth + 2f * unit,
+                top + (bottom - top) / 3f,
+                numberLeft + numberWidth + 4f * unit,
+                bottom - (bottom - top) / 3f,
+                Paint(paint).apply { style = Paint.Style.FILL },
+            )
+        }
+        ReaderTipVisual.ARROW -> {
+            val centerY = baseline + (paint.fontMetrics.ascent + paint.fontMetrics.descent) / 2f
+            val arrow = android.graphics.Path().apply {
+                moveTo(left + 8f * unit, centerY - 5f * unit)
+                lineTo(left + 3f * unit, centerY)
+                lineTo(left + 8f * unit, centerY + 5f * unit)
+            }
+            canvas.drawPath(arrow, Paint(paint).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1.5f * unit
+                strokeCap = Paint.Cap.SQUARE
+                strokeJoin = Paint.Join.MITER
+            })
+            canvas.drawText(tip.text, left + 20f * unit, baseline, paint)
+        }
+        ReaderTipVisual.TEXT -> Unit
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBatteryGlyph(
+    canvas: android.graphics.Canvas,
+    left: Float,
+    baseline: Float,
+    batteryPercent: Int,
+    paint: Paint,
+    drawNumberInside: Boolean,
+) {
+    val unit = density
+    val bodyWidth = 22f * unit
+    val bodyHeight = 10f * unit
+    val top = baseline + (paint.fontMetrics.ascent + paint.fontMetrics.descent) / 2f - bodyHeight / 2f
+    val bodyLeft = left + 2f * unit
+    val outline = Paint(paint).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = unit.coerceAtLeast(1f)
+        alpha = 194
+    }
+    val fill = Paint(paint).apply { style = Paint.Style.FILL; alpha = 194 }
+    canvas.drawRoundRect(bodyLeft, top, bodyLeft + bodyWidth, top + bodyHeight, unit, unit, outline)
+    canvas.drawRect(
+        bodyLeft + bodyWidth,
+        top + bodyHeight / 3f,
+        bodyLeft + bodyWidth + 2f * unit,
+        top + bodyHeight * 2f / 3f,
+        fill,
+    )
+    val innerWidth = (bodyWidth - 4f * unit) * batteryPercent.coerceIn(0, 100) / 100f
+    if (innerWidth > 0f) {
+        canvas.drawRoundRect(
+            bodyLeft + 2f * unit,
+            top + 2f * unit,
+            bodyLeft + 2f * unit + innerWidth,
+            top + bodyHeight - 2f * unit,
+            unit,
+            unit,
+            fill,
+        )
+    }
+    if (drawNumberInside) {
+        val numberPaint = Paint(paint).apply {
+            textSize = minOf(textSize * .72f, 8f * unit)
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        val centerY = top + bodyHeight / 2f - (numberPaint.fontMetrics.ascent + numberPaint.fontMetrics.descent) / 2f
+        canvas.drawText(
+            batteryPercent.coerceIn(0, 100).toString(),
+            bodyLeft + bodyWidth / 2f,
+            centerY,
+            numberPaint,
+        )
+    }
+}
