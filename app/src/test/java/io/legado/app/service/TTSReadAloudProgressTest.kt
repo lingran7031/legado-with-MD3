@@ -101,6 +101,46 @@ class TTSReadAloudProgressTest {
     }
 
     @Test
+    fun staleCallbackFromPreviousPlaybackSessionIsIdentifiable() {
+        val stale = ttsUtteranceId(sessionId = 41, index = 3)
+        val current = ttsUtteranceId(sessionId = 42, index = 3)
+
+        assertEquals(41L, ttsPlaybackSessionId(stale))
+        assertEquals(42L, ttsPlaybackSessionId(current))
+        assertEquals(null, ttsPlaybackSessionId("legacy-utterance-3"))
+        assertFalse(isCurrentTtsPlaybackCallback(stale, currentSessionId = 42))
+        assertTrue(isCurrentTtsPlaybackCallback(current, currentSessionId = 42))
+    }
+
+    @Test
+    fun chapterCompletionNeverRestartsTheFinishedUtterance() {
+        assertFalse(
+            shouldContinueTtsPlayback(
+                hasNextParagraph = false,
+                paused = false,
+                usesSingleUtteranceQueue = true,
+                paragraphIntervalMillis = 0,
+            )
+        )
+        assertFalse(
+            shouldContinueTtsPlayback(
+                hasNextParagraph = false,
+                paused = false,
+                usesSingleUtteranceQueue = false,
+                paragraphIntervalMillis = 500,
+            )
+        )
+        assertTrue(
+            shouldContinueTtsPlayback(
+                hasNextParagraph = true,
+                paused = false,
+                usesSingleUtteranceQueue = true,
+                paragraphIntervalMillis = 0,
+            )
+        )
+    }
+
+    @Test
     fun mediaProgressEstimatesTimeFromCharactersAndSpeechRate() {
         assertEquals(1_000L, estimatedReadAloudTimeMs(4, 4f))
         assertEquals(2_000L, estimatedReadAloudTimeMs(8, 4f))

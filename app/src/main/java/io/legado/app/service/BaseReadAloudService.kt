@@ -358,6 +358,9 @@ abstract class BaseReadAloudService : BaseService(),
         clearFinishChapterTimerIfChapterChanged(ReadBook.durChapterIndex)
         val generation = ++prepareReadAloudGeneration
         prepareReadAloudJob?.cancel()
+        // Stop the previous engine queue before preparing a new cursor. Otherwise a late
+        // completion callback can advance the state that is being replaced.
+        playStop()
         prepareReadAloudJob = execute(executeContext = IO) {
             val input = ReadBook.readerChapterInputWindow.current ?: return@execute
             val pagination = ReadBook.readerPagination(input.chapter.index) ?: run {
