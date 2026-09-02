@@ -141,6 +141,45 @@ class TTSReadAloudProgressTest {
     }
 
     @Test
+    fun nextChapterStartsBeforeItsPaginationIsReady() {
+        val preparation = prepareReadAloudPagination(
+            pageStarts = null,
+            requestedChapterPosition = null,
+            currentChapterPosition = 0,
+            chapterLength = 240,
+        )
+
+        assertTrue(preparation.usedFallback)
+        assertEquals(0, preparation.requestedChapterPosition)
+    }
+
+    @Test
+    fun paginationFallbackUsesAClampedAbsoluteChapterPosition() {
+        val preparation = prepareReadAloudPagination(
+            pageStarts = emptyList(),
+            requestedChapterPosition = null,
+            currentChapterPosition = Int.MAX_VALUE,
+            chapterLength = 240,
+        )
+
+        assertTrue(preparation.usedFallback)
+        assertEquals(239, preparation.requestedChapterPosition)
+    }
+
+    @Test
+    fun availablePaginationKeepsTheLegacyPageRelativeCursor() {
+        val preparation = prepareReadAloudPagination(
+            pageStarts = listOf(0, 100, 200),
+            requestedChapterPosition = null,
+            currentChapterPosition = 140,
+            chapterLength = 240,
+        )
+
+        assertFalse(preparation.usedFallback)
+        assertEquals(null, preparation.requestedChapterPosition)
+    }
+
+    @Test
     fun mediaProgressEstimatesTimeFromCharactersAndSpeechRate() {
         assertEquals(1_000L, estimatedReadAloudTimeMs(4, 4f))
         assertEquals(2_000L, estimatedReadAloudTimeMs(8, 4f))

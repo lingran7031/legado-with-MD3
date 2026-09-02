@@ -592,6 +592,14 @@ object ReadBook : CoroutineScope by MainScope(), KoinComponent {
             )
         }
         publishSnapshot()
+        if (shouldSyncReadAloudAfterPagination(
+                isReadAloudRunning = BaseReadAloudService.isRun,
+                serviceChapterIndex = BaseReadAloudService.currentChapterIndex,
+                publishedChapterIndexes = readerPaginationSnapshots.keys,
+            )
+        ) {
+            ReadAloud.syncLayout()
+        }
     }
 
     fun publishReaderPaginationEnvironment(

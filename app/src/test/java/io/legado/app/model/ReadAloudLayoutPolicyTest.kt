@@ -61,4 +61,33 @@ class ReadAloudLayoutPolicyTest {
             )
         )
     }
+
+    @Test
+    fun currentChapterPaginationResynchronizesActiveReadAloud() {
+        assertTrue(
+            shouldSyncReadAloudAfterPagination(
+                isReadAloudRunning = true,
+                serviceChapterIndex = 5,
+                publishedChapterIndexes = listOf(4, 5, 6),
+            )
+        )
+    }
+
+    @Test
+    fun adjacentPaginationDoesNotResynchronizeReadAloud() {
+        assertFalse(
+            shouldSyncReadAloudAfterPagination(
+                isReadAloudRunning = true,
+                serviceChapterIndex = 5,
+                publishedChapterIndexes = listOf(4, 6),
+            )
+        )
+        assertFalse(
+            shouldSyncReadAloudAfterPagination(
+                isReadAloudRunning = false,
+                serviceChapterIndex = 5,
+                publishedChapterIndexes = listOf(5),
+            )
+        )
+    }
 }

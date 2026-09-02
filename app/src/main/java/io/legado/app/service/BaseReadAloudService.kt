@@ -363,20 +363,24 @@ abstract class BaseReadAloudService : BaseService(),
         playStop()
         prepareReadAloudJob = execute(executeContext = IO) {
             val input = ReadBook.readerChapterInputWindow.current ?: return@execute
-            val pagination = ReadBook.readerPagination(input.chapter.index) ?: run {
-                AppLog.put("启动朗读失败：章节分页未完成 chapterIndex=${input.chapter.index}")
-                return@execute
-            }
+            val pagination = ReadBook.readerPagination(input.chapter.index)
+            val pageStarts = pagination?.pageStarts?.takeIf { it.isNotEmpty() }
             val preparedChapter = ReaderReadAloudChapter.create(
                 chapterIndex = input.chapter.index,
                 title = input.displayTitle,
                 semanticContent = input.source.semanticContent,
-                pageStarts = pagination.pageStarts,
+                pageStarts = pageStarts ?: listOf(0),
+            )
+            val preparation = prepareReadAloudPagination(
+                pageStarts = pageStarts,
+                requestedChapterPosition = requestedChapterPosition,
+                currentChapterPosition = ReadBook.durChapterPos,
+                chapterLength = preparedChapter.chapterLength,
             )
             val start = resolveReadAloudStartPosition(
                 requestedPageIndex = requestedPageIndex,
                 requestedOffsetInPage = requestedStartPos,
-                requestedChapterPosition = requestedChapterPosition,
+                requestedChapterPosition = preparation.requestedChapterPosition,
                 pageIndexAt = preparedChapter::pageIndexAt,
                 pageStart = preparedChapter::pageStart,
             )
@@ -452,6 +456,7 @@ abstract class BaseReadAloudService : BaseService(),
             preparedPlaybackCursor?.takeIf { hasSpeechPlaybackQueue }?.let(::publishPlaybackInfo)
             launch(Main) {
                 if (generation != prepareReadAloudGeneration) return@launch
+                if (preparation.usedFallback) syncReaderLayout()
                 upMediaMetadata()
                 if (play) play() else pageChanged = true
             }
@@ -1512,4 +1517,30 @@ internal inline fun findReadAloudPageIndex(
         targetPageIndex++
     }
     return targetPageIndex
+}
+
+internal data class ReadAloudPaginationPreparation(
+    val requestedChapterPosition: Int?,
+    val usedFallback: Boolean,
+)
+
+/**
+ * Keeps speech preparation independent from the asynchronous reader pagination pass.
+ * When pagination is temporarily unavailable, the chapter is treated as one page and
+ * the persisted absolute chapter position replaces the now-stale page-relative cursor.
+ */
+internal fun prepareReadAloudPagination(
+    pageStarts: List<Int>?,
+    requestedChapterPosition: Int?,
+    currentChapterPosition: Int,
+    chapterLength: Int,
+): ReadAloudPaginationPreparation {
+    val usedFallback = pageStarts.isNullOrEmpty()
+    val lastReadablePosition = (chapterLength - 1).coerceAtLeast(0)
+    val fallbackPosition = currentChapterPosition.coerceIn(0, lastReadablePosition)
+    return ReadAloudPaginationPreparation(
+        requestedChapterPosition = requestedChapterPosition
+            ?: fallbackPosition.takeIf { usedFallback },
+        usedFallback = usedFallback,
+    )
 }
