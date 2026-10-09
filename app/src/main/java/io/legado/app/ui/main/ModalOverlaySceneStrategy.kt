@@ -30,9 +30,13 @@ import androidx.navigation3.scene.OverlayScene
 import androidx.navigation3.scene.Scene
 import androidx.navigation3.scene.SceneStrategy
 import androidx.navigation3.scene.SceneStrategyScope
+import io.legado.app.ui.theme.LegadoTheme
+import io.legado.app.ui.theme.ThemeResolver
+import io.legado.app.ui.theme.rememberOpaqueColorScheme
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal const val NAV_SLIDE_DURATION_MILLIS = 480
 internal const val NAV_FADE_DURATION_MILLIS = 360
@@ -125,6 +129,11 @@ private data class PageSlideOverlayScene(
     private val animation = animations.state(key, previousEntries.last().contentKey)
 
     override val content: @Composable () -> Unit = {
+        val pageBackgroundColor = if (ThemeResolver.isMiuixEngine(LegadoTheme.composeEngine)) {
+            MiuixTheme.colorScheme.surface
+        } else {
+            rememberOpaqueColorScheme().background
+        }.copy(alpha = 1f)
         val backScope = rememberCoroutineScope()
         PredictiveBackHandler(enabled = isTopEntry(entry.contentKey)) { events ->
             try {
@@ -164,6 +173,8 @@ private data class PageSlideOverlayScene(
                     scaleY = scaleX
                     alpha = animation.opacity.value
                 }
+                // 底板随页面一起转场，避免透明主题或背景图加载时透出保活的下层内容。
+                .background(pageBackgroundColor)
         ) {
             entry.Content()
         }
